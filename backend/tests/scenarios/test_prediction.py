@@ -1,12 +1,16 @@
 """Prediction scenarios. Expected outcomes are the spec: don't loosen them to make a change pass."""
 
+from collections import deque
+from dataclasses import replace
+from typing import Any
+
 import pytest
 
 from app.filters.facts import ANY_VIEWPOINT, EvalContext, LiveFacts
 from app.places.models import Place, PredictionOverrides, Visibility
 from app.predict.arrival import runways_for
 from app.predict.engine import PredictionSettings, Predictor, is_active, prediction_for
-from app.tracks.store import Track
+from app.tracks.store import Track, TrackPoint
 from tests.scenarios.flight import FlightState, at, fly
 
 HOME = Place(id=1, name="Home", lat=38.84, lon=-97.61, elevation_ft=1220, radius_nm=10,
@@ -119,6 +123,15 @@ def test_single_confident_update_does_not_turn_on() -> None:
     assert is_active(track, HOME.id)
 
 
+def _track_until(track: Track, pts: list[TrackPoint], extra: dict[str, Any]) -> Track:
+    """The track as it looked at the last of `pts`, sharing prediction state via `extra`."""
+    last = pts[-1]
+    sub = replace(track, history=deque(pts, maxlen=track.history.maxlen), extra=extra)
+    sub.lat, sub.lon, sub.pos_time, sub.last_seen = last.lat, last.lon, last.t, last.t
+    sub.alt_baro_ft, sub.gs_kt, sub.track_deg = last.alt_ft, last.gs_kt, last.track_deg
+    return sub
+
+
 def _facts(track: Track) -> LiveFacts:
     return LiveFacts(track, EvalContext(track.pos_time or 0.0, {p.id: p for p in PLACES}))
 
@@ -168,3 +181,31 @@ def test_place_override_raises_the_bar() -> None:
     for i in range(3, -1, -1):
         predictor.update([track], [strict], end - i * 0.1, {})
     assert not is_active(track, HOME.id)
+
+
+def test_circling_near_the_airport_is_not_predicted_arrival() -> None:
+    # Steady 3°/s orbit 3 nm from KSLN at ~1,700 ft above the field: each lap briefly points at
+    # the field, but it isn't arriving.
+    lat, lon = at(KSLN.lat, KSLN.lon, 300, 3)
+    for start_hdg in (0, 90, 180, 270):
+        _store, track, end = fly(
+            FlightState(lat, lon, 3000, 100, start_hdg, turn_dps=3.0, category="A1"), 600
+        )
+        predictor = Predictor(PredictionSettings(), seed=1)
+        on = 0
+        extra: dict[str, Any] = {}
+        # Re-run the last few minutes cycle by cycle, as the live loop would.
+        for i in range(30):
+            t = end - (29 - i) * 10
+            pts = [p for p in track.history if p.t <= t]
+            sub = _track_until(track, pts, extra)
+            predictor.update([sub], [KSLN], t, {3: RUNWAYS})
+            on += is_active(sub, KSLN.id)
+        assert on == 0, f"orbit starting {start_hdg}° predicted arrival on {on} cycles"
+
+
+def test_turn_to_final_is_predicted_once_rolled_out() -> None:
+    # Base-to-final turn onto runway 35 that rolled out 6 nm south of the field.
+    lat, lon = at(KSLN.lat, KSLN.lon, 180, 6)
+    track, _ = run(FlightState(lat, lon, 3200, 130, 0, vrate_fpm=-600), seconds=40)
+    assert is_active(track, KSLN.id)

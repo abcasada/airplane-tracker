@@ -2,7 +2,7 @@
 
 Personal ADS-B aircraft alert service. It polls free ADS-B aggregators around the user's active places, enriches and classifies aircraft (with a strong focus on military), computes generic facts (visibility, arrival score, area entry, predictions with confidence), and runs **user-built filters** over them. It pushes matches to Android through Home Assistant. It ships as **one lightweight Docker container** on a shared home server. The PWA web UI is exposed via a Cloudflare Tunnel behind built-in auth with TOTP 2FA. **The filter dashboard is the product.** The user spends their time fine-tuning filters there.
 
-**Status:** Phases 0–1 done: secure skeleton, ingest from adsb.fi/adsb.lol, enrichment datasets, military classifier, filter engine and dashboard (builder, live preview, funnel, why-not), alert episodes and Home Assistant notifications. The full design, data-source research and phase order are in **`docs/PLAN.md`**; read it before starting any phase. Don't start a phase the user hasn't approved. When the design changes, update `docs/PLAN.md` in the same commit.
+**Status:** Phases 0–3 done: secure skeleton, ingest from adsb.fi/adsb.lol, enrichment datasets, military classifier, filter engine and dashboard (builder, live preview, funnel, why-not), alert episodes and Home Assistant notifications (actions, photos, countdowns); airports, routes, arrival score, travel/schedules, live map; prediction (gate + ensemble, hysteresis), replay harness with metrics, and the dashboard backtest. The full design, data-source research and phase order are in **`docs/PLAN.md`**; read it before starting any phase. Don't start a phase the user hasn't approved. When the design changes, update `docs/PLAN.md` in the same commit.
 
 ## Stack (planned)
 
@@ -21,6 +21,9 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy app tests
 uv run pytest -q                               # unit + scenario + replay-fixture tests
 ENV=development DATA_DIR=./.devdata uv run python -m app.main   # dev server on :8080
+DATA_DIR=./.devdata uv run python -m app.replay --days 1        # prediction metrics vs baseline from recordings
+REPLAY_DUMP=/tmp/after.json uv run pytest -q tests/test_replay.py   # fixture metrics, to compare before/after
+uv run python -m tests.scenarios.replay_fixture                  # regenerate the synthetic replay fixture
 cd frontend && npm ci && npm run check && npm test && npm run build   # build → backend/static
 npm run dev                                    # Vite on :5173, proxies /api to :8080
 docker compose up -d --build                   # app + cloudflared (needs .env)
@@ -42,7 +45,7 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 - `filters/` — filter expression-tree schema (pydantic), field catalog, compiler to predicates, exclusions. **One engine** serves live alerting, the dashboard live preview/funnel/"why not?", and the backtest. Never fork the evaluation logic.
 - `alerts/` — episode state machine (`predicted → active → ended`), episode de-duplication, opt-in suppression, shadow mode, message templates.
 - `notify/` — `Notifier` interface; Home Assistant (primary), ntfy, web push.
-- `api/` — REST + SSE. `replay/` — offline replay harness, metrics, and the what-if engine behind the Tuning simulator.
+- `api/` — REST + SSE. `replay/` — offline replay (`core`), prediction metrics vs the adsb-alarm baseline (`metrics`), the dashboard backtest (`backtest`) and the `python -m app.replay` CLI.
 
 ## Conventions
 

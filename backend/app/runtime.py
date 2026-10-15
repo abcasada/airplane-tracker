@@ -41,6 +41,7 @@ from app.places.models import Place
 from app.places.repo import PlaceRepo
 from app.predict.arrival import Runway, runways_for
 from app.predict.engine import PredictionSettings, PredictionState, Predictor
+from app.replay.backtest import Backtester
 from app.sources import readsb
 from app.sources.base import SourceBatch
 from app.tracks.store import Track, TrackStore
@@ -79,6 +80,7 @@ class Runtime:
             on_event=self.broker.publish,
         )
         self.predictor = Predictor()
+        self.backtester = Backtester(self)
         self.planner_cfg = PlannerConfig(outer_enabled=True)
         self.poller = Poller(
             [readsb.adsbfi(ctx.http, ctx.clock), readsb.adsblol(ctx.http, ctx.clock)],
@@ -133,6 +135,7 @@ class Runtime:
         self._tasks.append(asyncio.create_task(coro, name=name))
 
     async def stop(self) -> None:
+        await self.backtester.cancel_all()
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -292,15 +295,7 @@ class Runtime:
     async def ingest(self, batch: SourceBatch) -> None:
         for obs in batch.observations:
             track, is_new = self.store.update(obs)
-            callsign_changed = track.airline_callsign != track.callsign
-            if is_new or track.info is None:
-                track.info = await self.enricher.lookup(track.hex)
-            if callsign_changed:
-                track.airline = self.enricher.airline_for(track.callsign)
-                track.airline_callsign = track.callsign
-            if is_new or callsign_changed or track.classification is None:
-                self.classify_track(track)
-            track.route = self.routes.get(track.callsign)
+            await self.enrich_track(track, is_new)
             self.routes.want(track.callsign, track.lat, track.lon)
             home = self.home()
             if home is not None and track.has_position:
@@ -312,6 +307,18 @@ class Runtime:
                     home.elevation_ft,
                     track.on_ground,
                 )
+
+    async def enrich_track(self, track: Track, is_new: bool) -> None:
+        """Enrichment and classification. Shared with replay, so backtests see the same facts."""
+        callsign_changed = track.airline_callsign != track.callsign
+        if is_new or track.info is None:
+            track.info = await self.enricher.lookup(track.hex)
+        if callsign_changed:
+            track.airline = self.enricher.airline_for(track.callsign)
+            track.airline_callsign = track.callsign
+        if is_new or callsign_changed or track.classification is None:
+            self.classify_track(track)
+        track.route = self.routes.get(track.callsign)
 
     async def on_batch(self, batch: SourceBatch, circle: QueryCircle) -> None:
         async with self._lock:

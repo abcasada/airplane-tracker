@@ -23,7 +23,7 @@ from app.clock import Clock
 from app.db import Database
 from app.filters.engine import CompiledFilter
 from app.filters.facts import LiveFacts, display_place
-from app.filters.models import FilterOut, QuietHours
+from app.filters.models import FilterOut, NotifySettings, QuietHours
 from app.notify.base import Notifier, NotifyError, OutgoingNotification
 from app.places.models import Place
 
@@ -96,6 +96,49 @@ def in_quiet_hours(q: QuietHours, now: float, tz: ZoneInfo) -> bool:
     if start < end:
         return start <= minutes < end
     return minutes >= start or minutes < end
+
+
+def local_day_start(now: float, tz: ZoneInfo) -> float:
+    t = datetime.fromtimestamp(now, tz)
+    return t.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def suppression_reason(
+    mode: str,
+    n: NotifySettings,
+    g: AlertingSettings,
+    now: float,
+    tz: ZoneInfo,
+    last_notified_by_filter: float | None,
+    last_notified_by_any: float | None,
+    notified_today_by_filter: int,
+) -> str | None:
+    """Why a new episode should not notify, or None. Every rule here is opt-in.
+
+    Pure, so live alerting and the backtest apply exactly the same rules."""
+    if mode != "live":
+        return "shadow mode"
+    if not n.enabled:
+        return "notifications off for this filter"
+    if n.quiet_hours and in_quiet_hours(n.quiet_hours, now, tz):
+        return "filter quiet hours"
+    if g.quiet_hours and n.priority != "critical" and in_quiet_hours(g.quiet_hours, now, tz):
+        return "quiet hours"
+    if (
+        n.repeat_suppress_min
+        and last_notified_by_filter is not None
+        and last_notified_by_filter >= now - n.repeat_suppress_min * 60
+    ):
+        return f"notified about this aircraft in the last {n.repeat_suppress_min:g} min"
+    if (
+        g.repeat_suppress_min
+        and last_notified_by_any is not None
+        and last_notified_by_any >= now - g.repeat_suppress_min * 60
+    ):
+        return f"any filter notified about it in the last {g.repeat_suppress_min:g} min"
+    if n.max_per_day and notified_today_by_filter >= n.max_per_day:
+        return f"daily limit of {n.max_per_day} reached"
+    return None
 
 
 class AlertManager:
@@ -249,51 +292,31 @@ class AlertManager:
         )  # fmt: skip
 
     async def _suppression(self, m: Match, now: float) -> str | None:
-        """Why this match should not notify, or None. Every rule here is opt-in."""
         n = m.filter.definition.notify
-        if m.filter.mode != "live":
-            return "shadow mode"
-        if not n.enabled:
-            return "notifications off for this filter"
-        if n.quiet_hours and in_quiet_hours(n.quiet_hours, now, self.tz):
-            return "filter quiet hours"
         g = self.settings
-        if (
-            g.quiet_hours
-            and n.priority != "critical"
-            and in_quiet_hours(g.quiet_hours, now, self.tz)
-        ):
-            return "quiet hours"
         hex_ = m.facts.hex
+        last_filter = last_any = None
+        today = 0
         if n.repeat_suppress_min:
             row = await self.db.fetchone(
-                "SELECT 1 FROM alerts WHERE filter_id = ? AND hex = ? AND notified = 1 "
-                "AND started_at >= ? LIMIT 1",
-                (m.filter.id, hex_, now - n.repeat_suppress_min * 60),
+                "SELECT max(started_at) FROM alerts WHERE filter_id = ? AND hex = ? "
+                "AND notified = 1",
+                (m.filter.id, hex_),
             )
-            if row:
-                return f"notified about this aircraft in the last {n.repeat_suppress_min:g} min"
+            last_filter = row[0] if row else None
         if g.repeat_suppress_min:
             row = await self.db.fetchone(
-                "SELECT 1 FROM alerts WHERE hex = ? AND notified = 1 AND started_at >= ? LIMIT 1",
-                (hex_, now - g.repeat_suppress_min * 60),
+                "SELECT max(started_at) FROM alerts WHERE hex = ? AND notified = 1", (hex_,)
             )
-            if row:
-                return f"any filter notified about it in the last {g.repeat_suppress_min:g} min"
+            last_any = row[0] if row else None
         if n.max_per_day:
-            start = self._local_day_start(now)
             row = await self.db.fetchone(
                 "SELECT count(*) FROM alerts WHERE filter_id = ? AND notified = 1 "
                 "AND started_at >= ?",
-                (m.filter.id, start),
+                (m.filter.id, local_day_start(now, self.tz)),
             )
-            if row and row[0] >= n.max_per_day:
-                return f"daily limit of {n.max_per_day} reached"
-        return None
-
-    def _local_day_start(self, now: float) -> float:
-        t = datetime.fromtimestamp(now, self.tz)
-        return t.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+            today = int(row[0]) if row else 0
+        return suppression_reason(m.filter.mode, n, g, now, self.tz, last_filter, last_any, today)
 
     async def sent_today(self, now: float) -> int:
         start = now - (now % 86400)  # HA's counter resets at midnight UTC

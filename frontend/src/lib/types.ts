@@ -298,3 +298,39 @@ export function blankFilter(): FilterIn {
     definition: { root: emptyGroup(), display_place_id: null, notify: defaultNotify() },
   }
 }
+
+// ---- backtest -------------------------------------------------------------------------------
+
+export interface BacktestCounts {
+  episodes: number
+  notified: number
+}
+
+export interface BacktestAircraft {
+  hex: string
+  callsign: string | null
+  registration: string | null
+  type_code: string | null
+  type_desc: string | null
+  first_at: number
+  episodes: number
+}
+
+export interface BacktestResult {
+  days: { date: string; draft: BacktestCounts; saved: BacktestCounts | null }[]
+  totals: { draft: BacktestCounts & { aircraft: number }; saved: (BacktestCounts & { aircraft: number }) | null }
+  only_draft: BacktestAircraft[]
+  only_saved: BacktestAircraft[]
+  both: number
+  batches: number
+  predicted: boolean
+}
+
+export interface BacktestJob {
+  id: string
+  status: 'running' | 'done' | 'error' | 'cancelled'
+  progress: number
+  result: BacktestResult | null
+  error: string | null
+  elapsed_s: number
+}

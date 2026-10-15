@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import AircraftRow from '../components/AircraftRow.svelte'
+  import Backtest from '../components/Backtest.svelte'
   import ExplainTree from '../components/ExplainTree.svelte'
   import Funnel from '../components/Funnel.svelte'
   import GroupEditor from '../components/GroupEditor.svelte'
@@ -239,6 +240,10 @@
         <section class="card">
           <h2>Notifications</h2>
           <NotifyEditor bind:definition={draft.definition} />
+        </section>
+        <section class="card">
+          <h2>What if?</h2>
+          <Backtest definition={draft.definition} filterId={saved?.id ?? null} mode={draft.mode} dirty={dirty || isNew} />
         </section>
         <section class="card stack">
           <label class="field">

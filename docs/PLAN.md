@@ -286,8 +286,12 @@ From a ring buffer of the last ~40 positions:
 2. **Ensemble** (candidates only, numpy): 64 sampled trajectories.
    - track/speed noise by data quality
    - turn rate = observed (decaying) + maneuver-scaled noise
-   - some samples follow the `nav_heading` turn, or the runway approach when `arrival_score` is high
+   - some samples follow the `nav_heading` turn
    - vertical rate levels at the selected altitude
+
+   Built once per aircraft per cycle in an aircraft-centred plane and shared by every place (each place only shifts it), vectorized over time with closed forms. About 40 ms per cycle for 60 aircraft and 3 places.
+
+   **Arrivals** don't use the ensemble: `predicted_arrival` comes from `arrival_score` (§6.2) with ETA = (distance + 3 nm if not lined up) / ground speed. Its confidence is discounted while the aircraft is turning or maneuvering (≈0.8 at 1°/s, ≈0.14 at 3°/s) unless it's lined up with a runway, because the score reads the current heading. That's a generic kinematic factor, not pattern detection: the `arrival_score` field itself is unchanged.
 
    Outputs:
    - `p_success` per predicted fact
@@ -317,9 +321,16 @@ confidence = p_success × q_data × q_horizon × q_corroborate   (clipped to [0,
 3. **Replay harness** with an injected clock. Ground truth is taken from the recording's future. It reports:
    - precision, recall, false alarms per day
    - achieved lead time, ETA error, calibration (reliability, Brier)
-   - classifier agreement vs `dbFlags`
+   - classifier agreement vs `dbFlags` (Phase 4)
 
    Parameter sweeps; tune on some days, validate on others. The same engine powers the dashboard **backtest** (§10.3).
+
+   Implemented as `app/replay` and `python -m app.replay [--from 2026-10-01T08:00] [--days N] [--lead S] [--confidence C] [--json]`, using the places, filters and settings in `DATA_DIR`. Definitions:
+   - **event**: the aircraft becomes visible from a viewpoint (`visible_now`), enters an area (`inside_area`), or reaches an airport (within 2 nm and below 1,000 ft above the field, or on the ground within 3 nm). Onsets within 2 min of the last one are the same event (flicker). Events less than 60 s after first contact count as events but not as *predictable* ones (the recall denominator).
+   - **alarm**: `predicted_*` turns on while the event hasn't happened yet. It's true if the event follows within lead time + 2 min, otherwise a false alarm. Alarms still open when the recording ends are left out.
+   - **calibration**: confidence sampled every 30 s per pair before the event; outcome = event within the lead time. Reports Brier score and ECE over 10 bins.
+
+   First numbers (defaults): on 5.5 h of real night-time traffic around the home example, *visible*: predictor recall 0.93 (14/15), precision 0.88, median lead 153 s (p10 126 s), median ETA error 6 s, ECE 0.09; adsb-alarm baseline precision 0.54 with about 6× the false alarms. Median lead is under the 3 min target; tuning on more days is Phase 4.
 4. **Baseline to beat:** the simple heuristic used by [adsb-alarm](https://github.com/stfnhh/adsb-alarm): "track within 90° of the bearing to you and distance decreasing".
 5. **CI fixtures:** synthetic, or short attributed adsb.lol (ODbL) excerpts only.
 6. **Initial targets:**
@@ -477,6 +488,8 @@ Preview and backtest therefore always agree with what would actually notify.
 - Tune sliders (lead time, confidence, elevation angle, slant range, suppression) and re-run.
 - Runs in a background task with progress reporting and is capped by date range, so it never stalls live alerting.
 
+Built (Phase 3): "What if?" on the filter editor runs the draft (and the saved version, when the draft differs) over the last 1/3/7/14 days: daily alerts and notifications, totals, and the aircraft added (+) or removed (−). One backtest runs at a time as an asyncio task that yields after every batch; the predictor runs only if the filter uses prediction fields. Episodes, exclusions and the filter's opt-in suppression use the live code (`suppression_reason` is shared). It uses today's places, mutes, settings and cached routes, and global cross-filter repeat suppression is not modelled because other filters aren't replayed. Not built yet: per-alert mini-map/facts and in-panel sliders (edit the draft and re-run instead).
+
 ### 10.4 Safe changes
 - **Shadow mode:** a filter evaluates live and logs alerts to history, marked "shadow", but doesn't push. Promote it to live when happy.
 - **Versions:** every save creates a version, with diff and one-click revert. Alerts record which version fired them.
@@ -552,6 +565,7 @@ Each phase ends usable, with tests passing and the container working. **The filt
 - Predicted paths on the map; countdown notifications.
 - Synthetic scenarios, replay harness and metrics vs the adsb-alarm baseline.
 - **Dashboard backtest (what-if)** with daily counts and diff vs the saved version.
+- *Status: done* (see §7.3–7.5, §9 and §10.3 for what was built and what's deferred).
 
 ### Phase 4 — History and refinement
 - Sightings history fields ("rare visitor" filters); 👍/👎 stats per filter.

@@ -116,38 +116,38 @@ def _horizon_decay(eta_s: float, height_ft: float) -> float:
 
 @dataclass(slots=True)
 class _Sim:
-    x: np.ndarray  # east nm
+    x: np.ndarray  # east nm, (steps, samples)
     y: np.ndarray  # north nm
     alt: np.ndarray  # ft MSL
     times: np.ndarray
+
+    def shifted(self, dx: float, dy: float) -> _Sim:
+        return _Sim(self.x - dx, self.y - dy, self.alt, self.times)
 
 
 def simulate(
     k: Kinematics,
     track: Track,
-    origin: tuple[float, float],
     ground_ft: float,
     settings: PredictionSettings,
     samples: int,
     rng: np.random.Generator | None,
 ) -> _Sim:
-    """Trajectories in a local plane around `origin`. samples=1 with rng=None is deterministic."""
-    assert track.lat is not None and track.lon is not None
+    """Trajectories in a local plane centred on the aircraft. samples=1 with rng=None is the
+    deterministic projection. Vectorized over time: every term has a closed form."""
     n_steps = int(settings.horizon_s // settings.step_s)
     dt = settings.step_s
-    x0, y0 = geo.to_local(track.lat, track.lon, origin[0], origin[1])
     alt0 = track.altitude_ft if track.altitude_ft is not None else ground_ft + 3000.0
     noisy = rng is not None and samples > 1
 
-    heading = np.full(samples, k.track_deg)
+    heading0 = np.full(samples, k.track_deg)
     gs = np.full(samples, k.gs_kt)
-    omega0 = np.full(samples, k.turn_rate_dps)
     omega_noise = np.zeros(samples)
     follow_nav = np.zeros(samples, dtype=bool)
     if noisy:
         assert rng is not None
         trk_sigma = 1.0 if track.pos_source == "adsb" else 4.0
-        heading = heading + rng.normal(0.0, trk_sigma, samples)
+        heading0 = heading0 + rng.normal(0.0, trk_sigma, samples)
         gs = gs * (1.0 + rng.normal(0.0, 0.03, samples))
         low_slow = (alt0 - ground_ft) < 5000 or k.gs_kt < 180
         # A sustained random turn rate: small for steady flight (airway course changes), larger
@@ -161,38 +161,69 @@ def simulate(
             assert rng is not None
             # A selected heading that differs from the track means a turn is coming.
             follow_nav = rng.uniform(0.0, 1.0, samples) < 0.9
-    nav_rate = HIGH_ALTITUDE_RATE_DPS if alt0 > 25000 else STANDARD_RATE_DPS
 
-    target_alt = track.nav_altitude_ft
-    vrate = np.full(samples, k.vrate_fpm)
-    xs = np.empty((n_steps, samples))
-    ys = np.empty((n_steps, samples))
-    alts = np.empty((n_steps, samples))
-    x = np.full(samples, x0)
-    y = np.full(samples, y0)
-    alt = np.full(samples, alt0)
-    for i in range(n_steps):
-        t = (i + 1) * dt
-        omega = omega0 * math.exp(-t / 60.0) + omega_noise
-        if nav is not None:
-            diff = (nav - heading + 180.0) % 360.0 - 180.0
-            nav_turn = np.clip(diff, -nav_rate * dt, nav_rate * dt) / dt
-            omega = np.where(follow_nav, nav_turn, omega)
-        heading = heading + omega * dt
-        rad = np.radians(heading)
-        dist = gs * dt / 3600.0
-        x = x + dist * np.sin(rad)
-        y = y + dist * np.cos(rad)
-        alt = alt + vrate * dt / 60.0
-        if target_alt is not None:
-            # Level off at the altitude selected on the autopilot.
-            crossed = ((vrate > 0) & (alt >= target_alt)) | ((vrate < 0) & (alt <= target_alt))
-            alt = np.where(crossed, target_alt, alt)
-            vrate = np.where(crossed, 0.0, vrate)
-        alt = np.maximum(alt, ground_ft)
-        xs[i], ys[i], alts[i] = x, y, alt
     times = np.arange(1, n_steps + 1) * dt
-    return _Sim(xs, ys, alts, times)
+    t = times[:, None]
+    # Observed turn decays over ~1 min; the random turn persists.
+    omega = k.turn_rate_dps * np.exp(-t / 60.0) + omega_noise
+    heading = heading0 + np.cumsum(omega, axis=0) * dt
+    if follow_nav.any():
+        assert nav is not None
+        # Turn toward the selected heading at a fixed rate, then hold it.
+        nav_rate = HIGH_ALTITUDE_RATE_DPS if alt0 > 25000 else STANDARD_RATE_DPS
+        diff = (nav - heading0 + 180.0) % 360.0 - 180.0
+        to_nav = heading0 + np.sign(diff) * np.minimum(nav_rate * t, np.abs(diff))
+        heading = np.where(follow_nav, to_nav, heading)
+    rad = np.radians(heading)
+    step_nm = gs * dt / 3600.0
+    x = np.cumsum(step_nm * np.sin(rad), axis=0)
+    y = np.cumsum(step_nm * np.cos(rad), axis=0)
+
+    v = k.vrate_fpm
+    alt = alt0 + v * t / 60.0
+    target = track.nav_altitude_ft
+    if target is not None and v != 0:
+        # Level off at the altitude selected on the autopilot.
+        alt = np.minimum(alt, target) if v > 0 else np.maximum(alt, target)
+    alt = np.maximum(alt, ground_ft)
+    alt = np.broadcast_to(alt, x.shape)
+    return _Sim(x, y, alt, times)
+
+
+class _Projections:
+    """One aircraft's projections for this cycle, shared by every place: the deterministic
+    path for the gate, and the ensemble only if some place passes the gate."""
+
+    def __init__(
+        self,
+        k: Kinematics,
+        track: Track,
+        ground_ft: float,
+        settings: PredictionSettings,
+        rng: np.random.Generator,
+    ) -> None:
+        self.k, self.track, self.ground_ft, self.settings, self.rng = (
+            k,
+            track,
+            ground_ft,
+            settings,
+            rng,
+        )
+        self._det: _Sim | None = None
+        self._ens: _Sim | None = None
+
+    @property
+    def det(self) -> _Sim:
+        if self._det is None:
+            self._det = simulate(self.k, self.track, self.ground_ft, self.settings, 1, None)
+        return self._det
+
+    @property
+    def ensemble(self) -> _Sim:
+        if self._ens is None:
+            s = self.settings
+            self._ens = simulate(self.k, self.track, self.ground_ft, s, s.samples, self.rng)
+        return self._ens
 
 
 def _closest(sim: _Sim, x0: float, y0: float, alt0: float) -> tuple[np.ndarray, np.ndarray]:
@@ -267,7 +298,7 @@ def predict_pair(
     place: Place,
     settings: PredictionSettings,
     now: float,
-    rng: np.random.Generator,
+    proj: _Projections,
     runways: list[Runway] | None = None,
 ) -> Prediction | None:
     if place.role == "airport":
@@ -281,7 +312,6 @@ def predict_pair(
     if dist_now - reach > k.gs_kt * settings.horizon_s / 3600.0:
         return None  # can't get there within the horizon at this speed
 
-    origin = (place.lat, place.lon)
     ground = place.elevation_ft
     limit = _size_limit(track, place) if kind == "visible" else 0.0
 
@@ -303,13 +333,15 @@ def predict_pair(
             )
         return pred
 
+    # Place position in the aircraft-centred plane of the shared projections.
+    px, py = -x0, -y0
     # Stage 1: deterministic gate with a relaxed target.
-    det = simulate(k, track, origin, ground, settings, 1, None)
+    det = proj.det.shifted(px, py)
     min_d = float(np.min(np.hypot(det.x, det.y)))
     if min_d > reach * 2 + 3 and not success(det).any():
         return None
 
-    sims = simulate(k, track, origin, ground, settings, settings.samples, rng)
+    sims = proj.ensemble.shifted(px, py)
     ok = success(sims)
     first = _first_success(ok, sims.times)
     hit = ~np.isnan(first)
@@ -334,6 +366,13 @@ def predict_pair(
     return pred
 
 
+def _turn_stability(k: Kinematics) -> float:
+    """The arrival score reads the current heading, which means little mid-turn or while
+    maneuvering: 1 when steady, ~0.8 at 1°/s, ~0.3 at 2°/s, ~0.14 at 3°/s."""
+    rate = max(abs(k.turn_rate_dps), k.turn_variability_dps) - 0.5
+    return 1.0 if rate <= 0 else 1.0 / (1.0 + rate * rate)
+
+
 def _predict_arrival(
     track: Track, k: Kinematics, place: Place, now: float, runways: list[Runway]
 ) -> Prediction | None:
@@ -351,7 +390,7 @@ def _predict_arrival(
     # Not lined up yet: allow a few miles for maneuvering onto final or into the pattern.
     path_nm = dist + (0.0 if rwy else 3.0)
     eta = path_nm / max(k.gs_kt, 60.0) * 3600.0
-    conf = score * _data_quality(track, k, now)
+    conf = score * _data_quality(track, k, now) * (1.0 if rwy else _turn_stability(k))
     return Prediction("arrival", score, round(conf, 3), round(eta, 1), cpa_nm=round(dist, 2))
 
 
@@ -384,13 +423,11 @@ def _apply_hysteresis(
         pred.active = h.active
 
 
-def deterministic_path(
-    track: Track, k: Kinematics, settings: PredictionSettings
-) -> list[tuple[float, float]]:
+def deterministic_path(track: Track, proj: _Projections) -> list[tuple[float, float]]:
     assert track.lat is not None and track.lon is not None
     origin = (track.lat, track.lon)
-    sim = simulate(k, track, origin, 0.0, settings, 1, None)
-    every = max(1, int(PATH_POINTS_EVERY_S // settings.step_s))
+    sim = proj.det
+    every = max(1, int(PATH_POINTS_EVERY_S // proj.settings.step_s))
     pts = [origin]
     for i in range(every - 1, len(sim.times), every):
         pts.append(geo.from_local(float(sim.x[i, 0]), float(sim.y[i, 0]), *origin))
@@ -398,9 +435,12 @@ def deterministic_path(
 
 
 class Predictor:
-    def __init__(self, settings: PredictionSettings | None = None, seed: int = 7) -> None:
+    def __init__(
+        self, settings: PredictionSettings | None = None, seed: int = 7, paths: bool = True
+    ) -> None:
         self.settings = settings or PredictionSettings()
         self.rng = np.random.default_rng(seed)
+        self.paths = paths  # map polylines; replay doesn't need them
 
     def update(
         self,
@@ -411,14 +451,17 @@ class Predictor:
     ) -> None:
         s = self.settings
         active_places = [p for p in places if p.is_active(now)]
+        # One terrain floor for the shared projections: places in reach are in one region.
+        ground = min((p.elevation_ft for p in active_places), default=0.0)
         for t in tracks:
             state: PredictionState = t.extra.setdefault("prediction", PredictionState())
             k = derive(t) if s.enabled else None
-            state.path = deterministic_path(t, k, s) if k is not None else []
+            proj = _Projections(k, t, ground, s, self.rng) if k is not None else None
+            state.path = deterministic_path(t, proj) if proj is not None and self.paths else []
             for p in active_places:
                 pred = (
-                    predict_pair(t, k, p, s, now, self.rng, runways.get(p.id))
-                    if k is not None
+                    predict_pair(t, k, p, s, now, proj, runways.get(p.id))
+                    if k is not None and proj is not None
                     else None
                 )
                 lead, conf = _effective(p, s)

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
@@ -10,6 +10,7 @@ from app.filters.engine import CompiledFilter, describe
 from app.filters.facts import LiveFacts
 from app.filters.models import FilterDefinition, FilterIn, FilterOut
 from app.filters.repo import FilterRepo
+from app.replay.backtest import BacktestSpec
 from app.runtime import aircraft_summary
 
 router = APIRouter(prefix="/api/filters", tags=["filters"])
@@ -30,6 +31,13 @@ class ExplainBody(BaseModel):
 class FlagsBody(BaseModel):
     enabled: bool | None = None
     mode: str | None = Field(None, pattern="^(live|shadow)$")
+
+
+class BacktestBody(BaseModel):
+    definition: FilterDefinition
+    filter_id: int | None = None  # compare with this filter's saved version
+    mode: Literal["live", "shadow"] = "live"
+    days: float = Field(1, gt=0, le=14)
 
 
 class RevertBody(BaseModel):
@@ -178,6 +186,37 @@ async def import_filters(body: ImportBody, ctx: Ctx, user: CurrentUser) -> dict[
     )
     await _reload(ctx)
     return {"imported": len(body.filters)}
+
+
+@router.post("/backtest", status_code=status.HTTP_202_ACCEPTED)
+async def start_backtest(body: BacktestBody, ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
+    """Replays recorded traffic through the draft (and the saved version, to compare)."""
+    rt = ctx.rt()
+    saved = None
+    mode = body.mode
+    if body.filter_id is not None:
+        f = await FilterRepo(ctx.db, ctx.clock).get(body.filter_id)
+        if f is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "filter not found")
+        saved = f.definition
+    end = ctx.clock.now()
+    spec = BacktestSpec(
+        body.definition, saved, body.filter_id or 0, mode, end - body.days * 86400, end
+    )
+    return rt.backtester.start(spec).public() | {"recordings": rt.recorder.usage()}
+
+
+@router.get("/backtest/{job_id}")
+async def get_backtest(job_id: str, ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
+    job = ctx.rt().backtester.get(job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "backtest not found")
+    return job.public()
+
+
+@router.delete("/backtest/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def cancel_backtest(job_id: str, ctx: Ctx, _: CurrentUser) -> None:
+    ctx.rt().backtester.cancel(job_id)
 
 
 @router.get("/{filter_id}")
