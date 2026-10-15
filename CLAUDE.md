@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Personal ADS-B aircraft alert service. It polls free ADS-B aggregators (plus optional paid APIs) around the user's active places, enriches and classifies aircraft (with a strong focus on military), evaluates user-defined watch rules, and predicts which aircraft will be visible from a viewpoint, arrive at an airport target, or enter an area target. It pushes notifications to Android through Home Assistant. It ships as **one lightweight Docker container** on a shared home server, with a PWA web UI exposed on the public internet behind built-in auth with TOTP 2FA.
+Personal ADS-B aircraft alert service. It polls free ADS-B aggregators around the user's active places, enriches and classifies aircraft (with a strong focus on military), computes generic facts (visibility, arrival score, area entry, predictions with confidence), and runs **user-built filters** over them. It pushes matches to Android through Home Assistant. It ships as **one lightweight Docker container** on a shared home server. The PWA web UI is exposed via a Cloudflare Tunnel behind built-in auth with TOTP 2FA. **The filter dashboard is the product.** The user spends their time fine-tuning filters there.
 
 **Status:** planning. The full design, data-source research and phase order are in **`docs/PLAN.md`**; read it before starting any phase. Don't start a phase the user hasn't approved. When the design changes, update `docs/PLAN.md` in the same commit.
 
@@ -20,7 +20,7 @@ cd backend && uv sync                          # install
 uv run ruff check . && uv run ruff format --check .
 uv run mypy app
 uv run pytest                                  # unit + scenario + replay-fixture tests
-uv run python -m app.replay <recording-dir> --zone home   # prediction metrics on recorded data
+uv run python -m app.replay <recording-dir> --place home  # prediction metrics on recorded data
 cd frontend && npm ci && npm run check && npm run build
 docker compose up --build
 ```
@@ -31,27 +31,30 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 
 `backend/app/`:
 
-- `sources/` — pluggable live sources behind the `Source` protocol (adsb.fi primary, adsb.lol failover; optional OpenSky/FR24 later). They **only fetch and normalize**. Rate limiting, retries and circuit breaking live in `ingest/`.
+- `sources/` — pluggable sources behind the `Source` protocol: area (adsb.fi primary, adsb.lol failover), local receiver, schedule (FAA SWIM later). Paid sources are deferred plug-ins. They **only fetch and normalize**. Rate limiting, retries and circuit breaking live in `ingest/`.
 - `ingest/` — query planner (places → inner/outer query circles, merged), poller, token-bucket rate limiter, merge-by-hex, recorder.
-- `enrich/` — tar1090-db aircraft DB + military address ranges, VRS standing-data airlines and routes, adsbdb fallback, FlightAware AeroAPI filed plans (optional, budget-capped), OurAirports airports and runways. All lookups go through the SQLite `cache` table.
-- `classify/` — military/government classifier: weighted signals → score + human-readable reasons; user overrides always win. Also the local-pattern-traffic detector.
+- `enrich/` — tar1090-db aircraft DB + military address ranges, plane-alert-db (ODbL), adsb.im routeset → VRS standing-data → adsbdb routes, OurAirports airports and runways. All lookups go through the SQLite `cache` table.
+- `classify/` — military/government/police classifier: weighted signals → score + human-readable reasons; user overrides always win.
 - `tracks/` — in-memory per-aircraft ring buffers and derived kinematics.
 - `places/` — viewpoints (visibility: elevation angle + size-based slant range), airport targets (ICAO + runways), area targets (polygon + altitude band + schedule).
-- `predict/` — local-tangent-plane geometry, CPA/ETA, arrival score and runway-approach projection, two-stage (gate + numpy ensemble) prediction, confidence score.
-- `rules/` — pydantic rule schema and the matching engine.
-- `alerts/` — episode state machine (`predicted → nearby → departed/expired`), dedup, cooldowns, message formatting.
+- `predict/` — local-tangent-plane geometry, CPA/ETA, generic arrival score and runway-approach projection, two-stage (gate + numpy ensemble) prediction, confidence score.
+- `filters/` — filter expression-tree schema (pydantic), field catalog, compiler to predicates, exclusions. **One engine** serves live alerting, the dashboard live preview/funnel/"why not?", and the backtest. Never fork the evaluation logic.
+- `alerts/` — episode state machine (`predicted → active → ended`), episode de-duplication, opt-in suppression, shadow mode, message templates.
 - `notify/` — `Notifier` interface; Home Assistant (primary), ntfy, web push.
 - `api/` — REST + SSE. `replay/` — offline replay harness, metrics, and the what-if engine behind the Tuning simulator.
 
 ## Conventions
 
 - **Units everywhere inside the backend:** nautical miles, knots, feet, feet/min, degrees true (0–360), WGS84 lat/lon, UTC epoch seconds as `float`. Convert only at the UI and notification edges. Suffix names with units when ambiguous (`radius_nm`, `alt_ft`, `eta_s`).
-- **Never call wall-clock time directly** in ingest, predict, rules or alerts. Use the injected `Clock` so replay and tests are deterministic.
+- **Never call wall-clock time directly** in ingest, predict, filters or alerts. Use the injected `Clock` so replay and tests are deterministic.
 - ICAO hex is stored **lowercase**. Callsigns are stripped and uppercased. Type designators are uppercased.
-- Pure functions for geometry, kinematics, prediction and rule matching, so they're testable without I/O. Side effects stay in `ingest/`, `notify/`, `db/`, `api/`.
-- Use the pydantic models in `rules/models.py` and `places/models.py` in API, engine and DB. Don't duplicate the shapes.
-- Terminology: **place** = viewpoint | airport target | area target. Don't reintroduce "zone".
-- Every setting that affects alerting (lead time, confidence, visibility, cooldowns) cascades **global → place → rule**. New settings follow the same cascade and must be usable in the Tuning simulator.
+- Pure functions for geometry, kinematics, prediction and filter evaluation, so they're testable without I/O. Side effects stay in `ingest/`, `notify/`, `db/`, `api/`.
+- Use the pydantic models in `filters/models.py` and `places/models.py` in API, engine and DB. Don't duplicate the shapes.
+- Terminology: **place** = viewpoint | airport | area. **filter** = user-defined expression tree + places + timing + notification settings. Don't reintroduce "zone" or "rule".
+- **No built-in special cases.** No airport-specific logic, no hard-coded "interesting" or "uninteresting" traffic (flight schools, pattern work, etc.). The app computes generic facts and exposes them as filter fields; the user decides. A new capability means a new field in the catalog, not a hidden behavior.
+- **Suppression is opt-in.** The only always-on de-duplication is one notification per aircraft × filter × place episode, updated in place. Repeat suppression, daily caps, rate caps and quiet hours are optional and default to off. The only exception is the safety ceiling under HA's 500/day limit.
+- Every setting that affects alerting (lead time, confidence, visibility, suppression) cascades **global → place → filter**. New settings follow the same cascade and must work in the live preview and the backtest.
+- Every new filter field needs: type, units, help text, autocomplete source (if any), and a test. Stored alert `facts_json` must include it so "why did this fire?" keeps working.
 - Schema changes go through numbered SQL migrations. Never edit an applied migration.
 - Keep comments sparse. Explain *why* (e.g. a threshold's source), not *what*.
 
@@ -61,11 +64,13 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 - Stay at **≤50% of each source's published rate limit** (adsb.fi: 1 req/s ⇒ budget 0.5 req/s). adsb.lol has no published limit, so treat it the same way.
 - adsb.fi temporarily **IP-blocks after repeated 4xx**. Back off on any 4xx/429 (circuit breaker, exponential up to 5 min). Never hot-loop retries.
 - Send gzip `Accept-Encoding` and a descriptive `User-Agent` (`airplane-tracker/<version> (personal, non-commercial)`).
-- Attribution must stay visible in the UI: adsb.fi (link required), adsb.lol (ODbL), OpenStreetMap tiles, OurAirports.
+- Attribution must stay visible in the UI: adsb.fi (link required), adsb.lol (ODbL), plane-alert-db (ODbL/DbCL), OpenStreetMap tiles, OurAirports.
 - airplanes.live returned 403 "contact us" on 2026-10-14. Don't add it without the user's approval from them.
 - adsbdb route data must not be redistributed: cache it privately and never include it in exports or fixtures.
-- **Paid APIs** (FlightAware AeroAPI etc.) are opt-in, keyed per user, and always go through the `api_budget` monthly cap (default: the free allowance). Only look up rule candidates, never every aircraft, and cache results.
-- Don't commit downloaded datasets (tar1090-db, standing-data, OurAirports). They download at runtime into `/data`.
+- **Free sources only for now.** Paid APIs (FlightAware, FR24) are deferred. If added later, they must be opt-in, keyed per user, behind a monthly budget cap, looked up only for filter candidates, and cached.
+- adsb.im routeset: batch requests, ≤1 per 30 s, cache 24 h (misses 6 h).
+- Don't commit downloaded datasets (tar1090-db, plane-alert-db, standing-data, OurAirports). They download at runtime into `/data`.
+- Only borrow code, lists or heuristics from MIT/permissive projects, with attribution in `NOTICE`. Never copy GPL code (e.g. plane-notify).
 
 ## Lightweight constraints
 
@@ -78,7 +83,8 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 - Every route requires a session except `/healthz`, `/login`, the manifest and icons. With `AUTH_MODE=proxy`, trust the user header only from configured proxy IPs.
 - Secrets (HA token, ntfy credentials, VAPID keys, password hash) come from env vars or the `/data` volume. They never go in the repo, logs, recordings or the snapshot JSON.
 - Validate user-provided regexes (callsign patterns) with a length limit and compile timeout, so a bad pattern can't stall the evaluation loop.
-- Internet-facing: keep TOTP, login lockout, CSRF (Origin check + token), CSP/HSTS headers, and `/docs` disabled in production. Read the client IP only from trusted-proxy headers.
+- Internet-facing via Cloudflare Tunnel: keep TOTP, login lockout, CSRF (Origin check + token), CSP/HSTS headers, and `/docs` disabled in production. Read the client IP only from `CF-Connecting-IP` when the request comes from the trusted `cloudflared` network. The app container publishes no ports.
+- SSE responses send a heartbeat at least every 20 s, because Cloudflare drops idle responses at ~100 s.
 - Notification payloads and anything else sent off-box must not contain viewpoint (home) coordinates.
 
 ## Testing
@@ -91,7 +97,7 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 
 The repo is intended to go public (MIT) after the Phase 1 MVP, so treat it as public now:
 
-- Never commit personal data: home coordinates, the user's domain, HA URLs or tokens, real places or rules. These live in `.env` and `/data`. Ship generic examples only.
+- Never commit personal data: home coordinates, the user's domain, HA URLs or tokens, Cloudflare tunnel tokens, real places or filters. These live in `.env` and `/data`. Ship generic examples only.
 - Never commit third-party data except synthetic fixtures or attributed adsb.lol (ODbL) excerpts. Never commit adsb.fi, adsbdb or FlightAware data.
 - gitleaks runs in CI. Git history must stay clean, because history becomes public too.
 
