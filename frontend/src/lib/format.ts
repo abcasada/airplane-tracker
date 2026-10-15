@@ -44,3 +44,16 @@ export function fmtDuration(seconds: number | null | undefined): string {
   const r = s % 60
   return r ? `${m} min ${r} s` : `${m} min`
 }
+
+export function fmtEta(eta_s: number | null | undefined): string {
+  if (eta_s == null) return ''
+  if (eta_s <= 0) return 'now'
+  if (eta_s < 90) return `in ~${Math.round(eta_s / 10) * 10} s`
+  return `in ~${Math.round(eta_s / 60)} min`
+}
+
+const PREDICTION_VERB = { visible: 'Visible from', entry: 'Enters', arrival: 'Arrives at' } as const
+
+export function describePrediction(p: { kind: keyof typeof PREDICTION_VERB; place: string; eta_s: number | null; confidence: number }): string {
+  return `${PREDICTION_VERB[p.kind]} ${p.place} ${fmtEta(p.eta_s)} (${Math.round(p.confidence * 100)}%)`
+}

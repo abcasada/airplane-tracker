@@ -4,6 +4,7 @@ import re
 
 from app.filters.facts import LiveFacts
 from app.places.models import Place
+from app.predict.engine import prediction_for
 
 _PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 
@@ -27,6 +28,7 @@ TEMPLATE_KEYS = {
     "tags": "plane-alert-db tags",
     "squawk": "Squawk code",
     "filters": "Names of the matching filters",
+    "eta": "Predicted arrival or visibility, e.g. 'in ~4 min' (empty if not predicted)",
 }
 
 DEFAULT_TITLE = "✈ {aircraft} · {distance} {direction} of {place}"
@@ -50,6 +52,26 @@ def _vertical(rate: float | None) -> str:
     if rate < -300:
         return "descending"
     return "level"
+
+
+def eta_seconds(facts: LiveFacts, place: Place | None) -> float | None:
+    """Predicted seconds until the display place's event (visible/entry/arrival), if any."""
+    if place is None:
+        return None
+    pred = prediction_for(facts.track, place.id)
+    if pred is None or not pred.active or pred.eta_s is None:
+        return None
+    return pred.eta_s
+
+
+def fmt_eta(eta_s: float | None) -> str:
+    if eta_s is None:
+        return ""
+    if eta_s <= 0:
+        return "now"
+    if eta_s < 90:
+        return f"in ~{round(eta_s / 10) * 10:.0f} s"
+    return f"in ~{round(eta_s / 60):.0f} min"
 
 
 def template_values(
@@ -82,6 +104,7 @@ def template_values(
         "tags": ", ".join(pa.tags) if pa else "",
         "squawk": t.squawk or "",
         "filters": ", ".join(filter_names),
+        "eta": fmt_eta(eta_seconds(facts, place)),
     }
 
 
@@ -102,6 +125,8 @@ def render(template: str, values: dict[str, str]) -> str:
 
 
 def default_title(values: dict[str, str]) -> str:
+    if values["eta"] and values["eta"] != "now" and values["place"]:
+        return render("✈ {aircraft} · {eta} · {distance} {direction} of {place}", values)
     if values["place"] and values["distance"]:
         return render(DEFAULT_TITLE, values)
     return render("✈ {aircraft}", values)

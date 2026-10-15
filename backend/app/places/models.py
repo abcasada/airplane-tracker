@@ -44,6 +44,13 @@ def _minutes(hhmm: str) -> int:
     return min(24 * 60, h * 60 + m)
 
 
+class PredictionOverrides(BaseModel):
+    """Per-place cascade over the global prediction settings. None = use the global value."""
+
+    lead_max_s: float | None = Field(None, ge=30, le=3600)
+    min_confidence: float | None = Field(None, ge=0.05, le=1)
+
+
 class PlaceIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     role: PlaceRole = "viewpoint"
@@ -59,6 +66,7 @@ class PlaceIn(BaseModel):
     active_from: float | None = None
     active_until: float | None = None
     schedule: Schedule | None = None
+    prediction: PredictionOverrides | None = None
     is_home: bool = False
     enabled: bool = True
     source: Literal["manual", "geolocation", "airport_lookup"] = "manual"

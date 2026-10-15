@@ -88,6 +88,11 @@ def ha_payload(n: OutgoingNotification) -> dict[str, Any]:
         data["image"] = n.image
     if n.click_url:
         data["clickAction"] = n.click_url
+    if n.eta_at is not None:
+        data["chronometer"] = True
+        data["when"] = int(n.eta_at)
+    if n.update:
+        data["alert_once"] = True
     if n.actions:
         # Handled by app.notify.ha_events via HA's mobile_app_notification_action event.
         actions: list[dict[str, str]] = [

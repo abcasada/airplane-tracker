@@ -1,7 +1,7 @@
 <script lang="ts">
   import L from 'leaflet'
   import { onMount } from 'svelte'
-  import { baseMap, placeLayer, placesBounds, planeIcon } from '../lib/map'
+  import { aircraftColor, baseMap, placeLayer, placesBounds, planeIcon } from '../lib/map'
   import type { AircraftSummary, Place } from '../lib/types'
 
   let {
@@ -23,11 +23,13 @@
   const markers = new Map<string, { m: L.Marker; key: string }>()
   let placeGroup: L.LayerGroup | null = null
   let trailLine: L.Polyline | null = null
+  let pathGroup: L.LayerGroup | null = null
   let fitted = false
 
   onMount(() => {
     map = baseMap(el)
     placeGroup = L.layerGroup().addTo(map)
+    pathGroup = L.layerGroup().addTo(map)
     const ro = new ResizeObserver(() => map?.invalidateSize())
     ro.observe(el)
     return () => {
@@ -79,6 +81,18 @@
         m.remove()
         markers.delete(hex)
       }
+    }
+  })
+
+  // Projected paths (next ~10 min) for aircraft a filter matches or that have a prediction.
+  $effect(() => {
+    if (!map || !pathGroup) return
+    pathGroup.clearLayers()
+    for (const a of aircraft) {
+      if (!a.path || a.path.length < 2) continue
+      const color = aircraftColor(a)
+      const sel = a.hex === selected
+      L.polyline(a.path, { color, weight: sel ? 3 : 2, opacity: sel ? 0.9 : 0.55, dashArray: '4 6', interactive: false }).addTo(pathGroup)
     }
   })
 

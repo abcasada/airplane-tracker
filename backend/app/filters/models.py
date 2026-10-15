@@ -44,6 +44,7 @@ class NotifySettings(BaseModel):
     channel: str = Field("Aircraft", max_length=60)  # Android notification channel
     alarm_stream: bool = False  # sound even in Do Not Disturb
     include_photo: bool = True
+    update_eta: bool = True  # update the notification in place when the ETA shifts
     title_template: str | None = Field(None, max_length=300)
     message_template: str | None = Field(None, max_length=1000)
     # Optional suppression; None means off.

@@ -14,9 +14,11 @@ from datetime import datetime
 from typing import Any, Literal
 
 from app import geo
+from app.classify.size import SIZE_CLASSES, size_for
 from app.enrich.routes import RouteFit, fit_route
 from app.places.models import Place
 from app.predict.arrival import ArrivalInputs, arrival_score
+from app.predict.engine import is_active, prediction_for
 
 from .facts import LiveFacts
 
@@ -41,11 +43,6 @@ CATEGORY_LABELS = {
     "C2": "Service vehicle (surface)", "C3": "Obstacle",
 }  # fmt: skip
 
-SIZE_CLASSES = ["large", "medium", "light"]
-_SIZE_BY_CATEGORY = {
-    "A3": "large", "A4": "large", "A5": "large", "A2": "medium", "A6": "medium",
-    "A1": "light", "A7": "light", "B1": "light", "B2": "medium", "B4": "light", "B6": "light",
-}  # fmt: skip
 COMPASS8 = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -114,10 +111,7 @@ def _pa(f: LiveFacts) -> Any:
 
 
 def size_class(f: LiveFacts) -> str:
-    cat = f.track.category
-    if cat in _SIZE_BY_CATEGORY:
-        return _SIZE_BY_CATEGORY[cat]
-    return "medium"
+    return size_for(f.track.category)
 
 
 def _distance(f: LiveFacts, p: Place | None) -> float | None:
@@ -269,6 +263,20 @@ def _arrival(f: LiveFacts, p: Place | None) -> tuple[float, str | None] | None:
     return result
 
 
+def _pred(attr: str, kind: str) -> Compute:
+    def compute(f: LiveFacts, p: Place | None) -> Any:
+        pred = prediction_for(f.track, p.id) if p else None
+        return getattr(pred, attr) if pred is not None and pred.kind == kind else None
+
+    return compute
+
+
+def _pred_active(f: LiveFacts, p: Place | None) -> bool | None:
+    if p is None or not f.track.has_position:
+        return None
+    return is_active(f.track, p.id)
+
+
 def _local_dt(f: LiveFacts) -> datetime:
     return datetime.fromtimestamp(f.ctx.now, f.ctx.tz)
 
@@ -321,8 +329,8 @@ def _flag(attr: str) -> Compute:
 
 # ---- catalog ------------------------------------------------------------------------------------
 
-ID, AC, CL, ST, PL, RT, TM = (
-    "Identity", "Aircraft", "Classification", "State", "Place", "Route", "Time"
+ID, AC, CL, ST, PL, PR, RT, TM = (
+    "Identity", "Aircraft", "Classification", "State", "Place", "Prediction", "Route", "Time"
 )  # fmt: skip
 
 for fd in [
@@ -479,6 +487,41 @@ for fd in [
     FieldDef("departed_from", "Claimed origin is", PL, "bool",
              "The route database says it came from this airport, and its position fits.",
              _departed_from, place=True, place_roles=("airport",)),
+    FieldDef("predicted_visible", "Visible now or soon", PR, "bool",
+             "Visible from the viewpoint now, or predicted to be within the lead time with enough "
+             "confidence (Settings → Prediction, or the place's own overrides). Turns on after 2 "
+             "consecutive confident predictions and off after 3 unconfident ones.",
+             _pred_active, place=True, place_roles=("viewpoint",)),
+    FieldDef("visible_eta_s", "Visible in", PR, "number",
+             "Predicted seconds until it becomes visible (0 = visible now).",
+             _pred("eta_s", "visible"), unit="s", place=True, place_roles=("viewpoint",)),
+    FieldDef("visible_confidence", "Visibility confidence", PR, "number",
+             "0–1: share of simulated paths that become visible, reduced for poor data and far-off "
+             "ETAs.", _pred("confidence", "visible"), place=True, place_roles=("viewpoint",),
+             aggregate="max"),
+    FieldDef("predicted_max_elevation_deg", "Highest predicted elevation", PR, "number",
+             "How high above the horizon it's expected to get from the viewpoint.",
+             _pred("max_elevation_deg", "visible"), unit="°", place=True,
+             place_roles=("viewpoint",), aggregate="max"),
+    FieldDef("predicted_closest_nm", "Predicted closest approach", PR, "number",
+             "Expected closest ground distance to the place within the prediction horizon.",
+             lambda f, p: (pr.cpa_nm if (pr := prediction_for(f.track, p.id) if p else None)
+                           else None), unit="nm", place=True),
+    FieldDef("predicted_entry", "Inside or entering soon", PR, "bool",
+             "Inside the area now, or predicted to enter within the lead time with enough "
+             "confidence.", _pred_active, place=True, place_roles=("area",)),
+    FieldDef("entry_eta_s", "Enters area in", PR, "number",
+             "Predicted seconds until it enters the area (0 = inside now).",
+             _pred("eta_s", "entry"), unit="s", place=True, place_roles=("area",)),
+    FieldDef("entry_confidence", "Area entry confidence", PR, "number",
+             "0–1 confidence that it enters the area.", _pred("confidence", "entry"),
+             place=True, place_roles=("area",), aggregate="max"),
+    FieldDef("predicted_arrival", "Arriving soon", PR, "bool",
+             "Arrival score high enough (with data quality) and expected at the airport within "
+             "the lead time.", _pred_active, place=True, place_roles=("airport",)),
+    FieldDef("arrival_eta_s", "Arrives in", PR, "number",
+             "Rough seconds until it reaches the airport, allowing for maneuvering onto final.",
+             _pred("eta_s", "arrival"), unit="s", place=True, place_roles=("airport",)),
     FieldDef("route_known", "Route known", RT, "bool",
              "A route database (adsb.im) knows this callsign's route.",
              lambda f, _: f.track.route.known if f.track.route else None),

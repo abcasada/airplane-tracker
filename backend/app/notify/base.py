@@ -16,6 +16,8 @@ class OutgoingNotification:
     click_url: str | None = None
     military: bool = False
     alert_ids: tuple[int, ...] = ()
+    eta_at: float | None = None  # epoch seconds; shown as a live countdown
+    update: bool = False  # in-place refresh of a notification already showing: don't re-alert
     actions: bool = True
 
     @property

@@ -8,11 +8,11 @@ from app.db import Database
 
 from .models import Place, PlaceIn
 
-_JSON_FIELDS = ("polygon", "visibility", "schedule")
+_JSON_FIELDS = ("polygon", "visibility", "schedule", "prediction")
 _COLUMNS = (
     "name", "role", "lat", "lon", "elevation_ft", "radius_nm", "polygon", "alt_floor_ft",
     "alt_ceiling_ft", "airport_icao", "visibility", "active_from", "active_until", "schedule",
-    "is_home", "enabled", "source",
+    "is_home", "enabled", "source", "prediction",
 )  # fmt: skip
 
 

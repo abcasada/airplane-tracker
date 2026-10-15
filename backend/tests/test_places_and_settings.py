@@ -64,3 +64,23 @@ async def test_ha_bad_token_is_reported(authed: Harness) -> None:
     r = await c.post("/api/settings/ha/test")
     assert r.json()["ok"] is False
     assert "401" in r.json()["error"]
+
+
+async def test_prediction_settings_and_place_override(authed: Harness) -> None:
+    c = authed.client
+    s = (await c.get("/api/settings/prediction")).json()
+    assert s["enabled"] is True and s["lead_max_s"] == 600 and s["min_confidence"] == 0.6
+    s["min_confidence"] = 0.75
+    r = await c.put("/api/settings/prediction", json=s)
+    assert r.status_code == 200 and r.json()["min_confidence"] == 0.75
+    assert authed.ctx.rt().predictor.settings.min_confidence == 0.75
+    assert (
+        await c.put("/api/settings/prediction", json={**s, "min_confidence": 2})
+    ).status_code == 422
+
+    home = {"name": "Home", "lat": 38.84, "lon": -97.61, "radius_nm": 10,
+            "prediction": {"lead_max_s": 300, "min_confidence": None}}  # fmt: skip
+    p = (await c.post("/api/places", json=home)).json()
+    assert p["prediction"] == {"lead_max_s": 300, "min_confidence": None}
+    got = next(x for x in (await c.get("/api/places")).json() if x["id"] == p["id"])
+    assert got["prediction"]["lead_max_s"] == 300

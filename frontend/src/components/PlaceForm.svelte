@@ -323,6 +323,39 @@
     </div>
   </details>
 
+  <details open={value.prediction !== null}>
+    <summary>Prediction <span class="muted small">(optional, overrides Settings for this place)</span></summary>
+    <div class="stack inner">
+      <label class="check">
+        <input type="checkbox" checked={value.prediction !== null}
+          onchange={(e) => (value.prediction = (e.currentTarget as HTMLInputElement).checked ? { lead_max_s: null, min_confidence: null } : null)} />
+        Use different prediction settings here
+      </label>
+      {#if value.prediction}
+        <div class="grid-2">
+          <label class="field">
+            Earliest warning (min) <span class="hint">Empty uses the global setting</span>
+            <input type="number" min="0.5" max="60" step="0.5"
+              value={value.prediction.lead_max_s === null ? '' : value.prediction.lead_max_s / 60}
+              onchange={(e) => {
+                const v = (e.currentTarget as HTMLInputElement).value
+                value.prediction!.lead_max_s = v === '' ? null : Math.round(+v * 60)
+              }} />
+          </label>
+          <label class="field">
+            Minimum confidence (%) <span class="hint">Empty uses the global setting</span>
+            <input type="number" min="5" max="100" step="5"
+              value={value.prediction.min_confidence === null ? '' : Math.round(value.prediction.min_confidence * 100)}
+              onchange={(e) => {
+                const v = (e.currentTarget as HTMLInputElement).value
+                value.prediction!.min_confidence = v === '' ? null : +v / 100
+              }} />
+          </label>
+        </div>
+      {/if}
+    </div>
+  </details>
+
   <label class="check"><input type="checkbox" bind:checked={value.enabled} /> Enabled</label>
 
   {#if error}<p class="error">{error}</p>{/if}

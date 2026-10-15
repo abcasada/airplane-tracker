@@ -304,7 +304,8 @@ confidence = p_success × q_data × q_horizon × q_corroborate   (clipped to [0,
 ```
 
 - **Hysteresis:** a predicted fact turns true at ≥ θ on 2 consecutive evaluations, and false after 3 evaluations below θ − 0.15.
-- `confidence`, `eta`, `lead_min` and `lead_max` are filter fields with global → place → filter defaults (10 min / 90 s / 0.6 to start). You tune them in the dashboard.
+- Lead time and minimum confidence cascade global (Settings → Prediction, 10 min / 0.6 to start) → place (optional override) → filter. At the filter level they're ordinary conditions on the `*_eta_s` and `*_confidence` fields (e.g. "visible ETA ≥ 90 s" for a minimum lead), so they work the same in the live preview and the backtest.
+- `predicted_*` is true only while the hysteresis is on. An aircraft that's already visible/inside counts as predicted with ETA 0, so "predicted visible" filters don't drop it as it arrives.
 
 ### 7.5 Testing against recorded flight data
 1. **Synthetic scenario tests:**
@@ -387,7 +388,7 @@ Notifications go to `notify.mobile_app_<phone>` via HA's REST API. Delivery work
 | `channel` | Each filter picks an Android **notification channel** (e.g. "Aircraft – Military"); sound, vibration and importance are then set per channel in Android |
 | `importance: high`, `priority: high`, `ttl: 0` | Immediate delivery |
 | `tag` | **Update in place** (ETA changes, predicted → overhead) instead of stacking |
-| `chronometer` + `when` | Live ETA countdown |
+| `chronometer` + `when` | Live ETA countdown. When the ETA moves by ≥60 s, the notification is re-sent in place with `alert_once` (silent): at most 3 updates per notification, ≥60 s apart, counted against the daily ceiling. Per-filter switch, on by default. |
 | `timeout` | Auto-dismiss after it has passed |
 | `clickAction` | Opens the PWA on that aircraft |
 | `actions` | "Mute this aircraft…", "Mute this type for this filter…", "Snooze filter 1 h", "👎 not interesting". Received via HA's WebSocket API (`mobile_app_notification_action`) and written as exclusions/feedback. |

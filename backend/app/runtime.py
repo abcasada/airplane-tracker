@@ -40,6 +40,7 @@ from app.notify.homeassistant import HAConfig, HomeAssistantClient, HomeAssistan
 from app.places.models import Place
 from app.places.repo import PlaceRepo
 from app.predict.arrival import Runway, runways_for
+from app.predict.engine import PredictionSettings, PredictionState, Predictor
 from app.sources import readsb
 from app.sources.base import SourceBatch
 from app.tracks.store import Track, TrackStore
@@ -77,7 +78,8 @@ class Runtime:
             public_url=ctx.settings.public_url,
             on_event=self.broker.publish,
         )
-        self.planner_cfg = PlannerConfig()
+        self.predictor = Predictor()
+        self.planner_cfg = PlannerConfig(outer_enabled=True)
         self.poller = Poller(
             [readsb.adsbfi(ctx.http, ctx.clock), readsb.adsblol(ctx.http, ctx.clock)],
             ctx.clock,
@@ -97,6 +99,7 @@ class Runtime:
         await self._seed()
         await self.reload_places()
         await self.reload_classifier()
+        await self.reload_prediction()
         await self.reload_filters()
         await self.enricher.reload()
         await self.routes.load()
@@ -182,6 +185,12 @@ class Runtime:
         self.filters = await FilterRepo(self.ctx.db, self.ctx.clock).all()
         self.exclusions = await ExclusionRepo(self.ctx.db, self.ctx.clock).all()
         self._compile()
+
+    async def reload_prediction(self) -> None:
+        s = PredictionSettings.model_validate(await self.ctx.db.get_json("prediction", {}))
+        self.predictor.settings = s
+        # The outer polling ring only matters when predicting where aircraft will be.
+        self.planner_cfg = PlannerConfig(outer_enabled=s.enabled, horizon_min=s.horizon_s / 60.0)
 
     async def reload_alerting(self) -> None:
         self.alerts.settings = AlertingSettings.model_validate(
@@ -327,6 +336,7 @@ class Runtime:
         started = time.perf_counter()
         now = self.ctx.clock.now()
         ectx = self.eval_context(now)
+        self.predictor.update(self.store.values(), self.places, now, self.runways)
         all_facts = self.facts_for_all(ectx)
         matches: list[Match] = []
         by_hex: dict[str, list[int]] = {}
@@ -390,4 +400,25 @@ def aircraft_summary(f: LiveFacts, home: Place | None, filter_ids: list[int]) ->
         "elevation_deg": f.get("elevation_angle_deg", hid) if hid is not None else None,
         "visible": f.get("visible_now", hid) if hid is not None else None,
         "filters": filter_ids,
+        "predictions": _active_predictions(f),
+        "path": _path(f) if filter_ids or _active_predictions(f) else None,
     }
+
+
+def _active_predictions(f: LiveFacts) -> list[dict[str, Any]]:
+    state: PredictionState | None = f.track.extra.get("prediction")
+    if state is None:
+        return []
+    out = []
+    for pid, pred in state.by_place.items():
+        if pred.active and pid in f.ctx.places:
+            out.append(
+                {"place_id": pid, "place": f.ctx.places[pid].name, "kind": pred.kind,
+                 "eta_s": pred.eta_s, "confidence": pred.confidence}
+            )  # fmt: skip
+    return out
+
+
+def _path(f: LiveFacts) -> list[tuple[float, float]] | None:
+    state: PredictionState | None = f.track.extra.get("prediction")
+    return state.path if state and state.path else None

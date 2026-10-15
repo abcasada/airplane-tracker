@@ -8,6 +8,7 @@ from app.alerts.manager import AlertingSettings
 from app.auth.deps import Ctx, CurrentUser
 from app.context import AppContext
 from app.notify.homeassistant import HAConfig, HomeAssistantClient, HomeAssistantError
+from app.predict.engine import PredictionSettings
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -108,3 +109,18 @@ async def put_alerting(body: AlertingSettings, ctx: Ctx, user: CurrentUser) -> A
     await ctx.db.audit(ctx.clock.now(), user.username, "settings.alerting")
     await ctx.rt().reload_alerting()
     return ctx.rt().alerts.settings
+
+
+@router.get("/prediction")
+async def get_prediction(ctx: Ctx, _: CurrentUser) -> PredictionSettings:
+    return ctx.rt().predictor.settings
+
+
+@router.put("/prediction")
+async def put_prediction(
+    body: PredictionSettings, ctx: Ctx, user: CurrentUser
+) -> PredictionSettings:
+    await ctx.db.set_json("prediction", body.model_dump())
+    await ctx.db.audit(ctx.clock.now(), user.username, "settings.prediction")
+    await ctx.rt().reload_prediction()
+    return ctx.rt().predictor.settings

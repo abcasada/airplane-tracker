@@ -49,6 +49,9 @@
     <div class="row">
       <label class="check"><input type="checkbox" bind:checked={n.include_photo} /> Include aircraft photo when available</label>
       <label class="check"><input type="checkbox" bind:checked={n.alarm_stream} /> Sound even in Do Not Disturb</label>
+      <label class="check" title="For predicted alerts: shows a countdown, and silently updates it (up to 3 times) when the ETA moves by a minute or more">
+        <input type="checkbox" bind:checked={n.update_eta} /> Keep the ETA countdown up to date
+      </label>
     </div>
 
     <details bind:open={showTemplates}>

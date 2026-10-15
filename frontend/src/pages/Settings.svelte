@@ -4,6 +4,7 @@
   import { fmtTime } from '../lib/format'
   import { loggedOut, session } from '../lib/session.svelte'
   import { toast } from '../lib/toast.svelte'
+  import type { PredictionSettings } from '../lib/types'
 
   interface HAState {
     url: string
@@ -36,6 +37,7 @@
     note: string
   }
   let alerting = $state<Alerting | null>(null)
+  let prediction = $state<PredictionSettings | null>(null)
   let exclusions = $state<Exclusion[]>([])
   const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone
 
@@ -49,6 +51,7 @@
     haService = ha.service
     if (haService) services = [haService]
     alerting = await get<Alerting>('/api/settings/alerting')
+    prediction = await get<PredictionSettings>('/api/settings/prediction')
     exclusions = await get<Exclusion[]>('/api/exclusions')
   })
 
@@ -57,6 +60,16 @@
     try {
       alerting = await put<Alerting>('/api/settings/alerting', $state.snapshot(alerting))
       toast('Alerting settings saved')
+    } catch (e) {
+      toast(errorMessage(e), 'error')
+    }
+  }
+
+  async function savePrediction() {
+    if (!prediction) return
+    try {
+      prediction = await put<PredictionSettings>('/api/settings/prediction', $state.snapshot(prediction))
+      toast('Prediction settings saved')
     } catch (e) {
       toast(errorMessage(e), 'error')
     }
@@ -226,6 +239,37 @@
         {/if}
       </div>
       <div><button class="primary" onclick={saveAlerting}>Save alerting settings</button></div>
+    </section>
+  {/if}
+
+  {#if prediction}
+    <section class="card stack">
+      <h2>Prediction</h2>
+      <p class="muted small">
+        Projects each aircraft's path to say when it will become visible, enter an area or reach an airport.
+        Filters use it through the <em>Predicted</em> fields. Places can override the lead time and confidence.
+      </p>
+      <label class="check"><input type="checkbox" bind:checked={prediction.enabled} /> Predict arrivals</label>
+      {#if prediction.enabled}
+        <div class="grid-2">
+          <label class="field">
+            Earliest warning (min) <span class="hint">Predictions further out than this don't count</span>
+            <input type="number" min="0.5" max="60" step="0.5" value={prediction.lead_max_s / 60}
+              onchange={(e) => (prediction!.lead_max_s = Math.round(+(e.currentTarget as HTMLInputElement).value * 60))} />
+          </label>
+          <label class="field">
+            Minimum confidence (%) <span class="hint">Higher means fewer false alarms but later warnings</span>
+            <input type="number" min="5" max="100" step="5" value={Math.round(prediction.min_confidence * 100)}
+              onchange={(e) => (prediction!.min_confidence = +(e.currentTarget as HTMLInputElement).value / 100)} />
+          </label>
+          <label class="field">
+            Look ahead (min) <span class="hint">How far the path is projected</span>
+            <input type="number" min="1" max="30" step="1" value={prediction.horizon_s / 60}
+              onchange={(e) => (prediction!.horizon_s = Math.round(+(e.currentTarget as HTMLInputElement).value * 60))} />
+          </label>
+        </div>
+      {/if}
+      <div><button class="primary" onclick={savePrediction}>Save prediction settings</button></div>
     </section>
   {/if}
 

@@ -220,3 +220,52 @@ async def test_status_and_fields(authed: Harness) -> None:
     assert status["tracks"] == 0 and len(status["sources"]) == 2
     fields = (await authed.client.get("/api/fields")).json()
     assert any(f["key"] == "visible_now" for f in fields["fields"])
+
+
+@respx.mock
+async def test_predicted_alert_has_countdown_and_updates_in_place(authed: Harness) -> None:
+    c = authed.client
+    home = (await c.post("/api/places", json=HOME)).json()
+    await c.put("/api/settings/ha", json={"url": HA, "token": "t", "service": "mobile_app_x"})
+    body = {
+        "name": "Coming into view",
+        "definition": {
+            "display_place_id": home["id"],
+            "root": {"mode": "all", "children": [
+                {"type": "cond", "id": "a", "field": "predicted_visible", "op": "is_true",
+                 "place": home["id"]},
+            ]},
+        },
+    }  # fmt: skip
+    assert (await c.post("/api/filters", json=body)).status_code == 201
+    sent = respx.post(f"{HA}/api/services/notify/mobile_app_x").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    # 16 nm north of home, southbound at 300 kt, 8,000 ft above home: visible in ~2 min.
+    # It takes a few reports before there's enough history to trust the projection.
+    lat = 38.84 + 16 / 60
+    for _ in range(6):
+        await _feed(authed, c17(authed.clock.now(), lat=lat, alt_baro_ft=9220, gs_kt=300))
+        authed.clock.advance(10)
+        lat -= 300 * 10 / 3600 / 60
+    assert sent.call_count == 1
+    first = json.loads(sent.calls[0].request.content)
+    assert " · in ~" in first["title"]
+    assert first["data"]["chronometer"] is True
+    eta_at = first["data"]["when"]
+    assert 60 < eta_at - authed.clock.now() < 200
+    assert "alert_once" not in first["data"]
+
+    # It slows right down: the ETA moves out by minutes, so the same notification is updated.
+    for _ in range(8):
+        await _feed(authed, c17(authed.clock.now(), lat=lat, alt_baro_ft=9220, gs_kt=120))
+        authed.clock.advance(10)
+        lat -= 120 * 10 / 3600 / 60
+    assert sent.call_count == 2
+    update = json.loads(sent.calls[1].request.content)
+    assert update["data"]["alert_once"] is True
+    assert update["data"]["tag"] == first["data"]["tag"]
+    assert update["data"]["when"] - eta_at >= 60
+    alert = (await c.get("/api/alerts")).json()[0]
+    detail = (await c.get(f"/api/alerts/{alert['id']}")).json()
+    assert [n["kind"] for n in detail["notifications"]] == ["new", "update"]

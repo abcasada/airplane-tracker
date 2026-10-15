@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fmtAlt, fmtNum } from '../lib/format'
+  import { describePrediction, fmtAlt, fmtEta, fmtNum } from '../lib/format'
   import type { AircraftSummary } from '../lib/types'
 
   let {
@@ -23,6 +23,9 @@
       {#if a.police}<span class="badge">POLICE</span>{/if}
       {#if a.squawk && ['7500', '7600', '7700'].includes(a.squawk)}<span class="badge danger">{a.squawk}</span>{/if}
       {#if a.visible}<span class="badge ok" title="Visible from home now">👁</span>{/if}
+      {#each a.predictions ?? [] as p (p.place_id)}
+        <span class="badge pred" title={describePrediction(p)}>⏱ {p.place} {fmtEta(p.eta_s)}</span>
+      {/each}
     </div>
     <div class="muted small ellipsis">{a.type_desc ?? ''}{a.operator ? ` · ${a.operator}` : ''}</div>
   </div>
@@ -40,6 +43,9 @@
 {/if}
 
 <style>
+  .pred {
+    background: var(--accent-soft);
+  }
   .ac {
     display: flex;
     gap: 10px;

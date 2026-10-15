@@ -3,7 +3,7 @@
   import QuickActions from '../components/QuickActions.svelte'
   import { errorMessage, get } from '../lib/api'
   import { catalog, loadCatalog } from '../lib/catalog.svelte'
-  import { fmtAlt, fmtDuration } from '../lib/format'
+  import { describePrediction, fmtAlt, fmtDuration } from '../lib/format'
   import AircraftPhoto from '../components/AircraftPhoto.svelte'
   import LiveMap from '../components/LiveMap.svelte'
   import type { AircraftSummary, Place } from '../lib/types'
@@ -87,6 +87,11 @@
         {a.distance_nm != null ? `${a.distance_nm.toFixed(1)} nm ${a.direction} of home` : ''}
         {#if a.elevation_deg != null && a.elevation_deg > 0}· {Math.round(a.elevation_deg)}° up{/if}
       </p>
+      {#if a.predictions?.length}
+        <ul class="small preds">
+          {#each a.predictions as p (p.place_id)}<li>⏱ {describePrediction(p)}</li>{/each}
+        </ul>
+      {/if}
       {#if d.military_reasons.length}
         <div>
           <h3>Classification</h3>

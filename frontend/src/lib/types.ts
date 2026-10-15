@@ -14,6 +14,20 @@ export interface Schedule {
   tz: string
 }
 
+export interface PredictionOverrides {
+  lead_max_s: number | null
+  min_confidence: number | null
+}
+
+export interface PredictionSettings {
+  enabled: boolean
+  horizon_s: number
+  lead_max_s: number
+  min_confidence: number
+  samples: number
+  step_s: number
+}
+
 export interface PlaceIn {
   name: string
   role: PlaceRole
@@ -29,6 +43,7 @@ export interface PlaceIn {
   active_from: number | null
   active_until: number | null
   schedule: Schedule | null
+  prediction: PredictionOverrides | null
   is_home: boolean
   enabled: boolean
   source: 'manual' | 'geolocation' | 'airport_lookup'
@@ -65,6 +80,7 @@ export function blankPlace(role: PlaceRole = 'viewpoint'): PlaceIn {
     active_from: null,
     active_until: null,
     schedule: null,
+    prediction: null,
     is_home: false,
     enabled: true,
     source: 'manual',
@@ -119,6 +135,7 @@ export interface NotifySettings {
   channel: string
   alarm_stream: boolean
   include_photo: boolean
+  update_eta: boolean
   title_template: string | null
   message_template: string | null
   repeat_suppress_min: number | null
@@ -184,6 +201,16 @@ export interface AircraftSummary {
   elevation_deg: number | null
   visible: boolean | null
   filters: number[]
+  predictions: ActivePrediction[]
+  path: [number, number][] | null
+}
+
+export interface ActivePrediction {
+  place_id: number
+  place: string
+  kind: 'visible' | 'entry' | 'arrival'
+  eta_s: number | null
+  confidence: number
 }
 
 export interface FunnelStep {
@@ -249,6 +276,7 @@ export function defaultNotify(): NotifySettings {
     channel: 'Aircraft',
     alarm_stream: false,
     include_photo: true,
+    update_eta: true,
     title_template: null,
     message_template: null,
     repeat_suppress_min: null,

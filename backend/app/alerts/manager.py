@@ -12,7 +12,7 @@ import json
 import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -33,6 +33,10 @@ log = logging.getLogger(__name__)
 
 PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2, "critical": 3}
 DB_TOUCH_INTERVAL_S = 60.0
+# In-place ETA updates: only for a meaningful shift, and never chatty.
+ETA_UPDATE_MIN_SHIFT_S = 60.0
+ETA_UPDATE_MIN_GAP_S = 60.0
+ETA_UPDATE_MAX = 3
 
 # Display fields stored with every alert, besides what the filter itself references.
 DISPLAY_FACTS = [
@@ -70,6 +74,17 @@ class Episode:
     touched_at: float
 
 
+@dataclass
+class Sent:
+    """The notification currently showing for one aircraft, for in-place ETA updates."""
+
+    lead: tuple[int, str]  # (filter id, hex) of the episode that wrote it
+    out: OutgoingNotification
+    filter_names: tuple[str, ...]
+    last_sent_at: float
+    updates: int = 0
+
+
 def in_quiet_hours(q: QuietHours, now: float, tz: ZoneInfo) -> bool:
     t = datetime.fromtimestamp(now, tz)
     minutes = t.hour * 60 + t.minute
@@ -99,6 +114,7 @@ class AlertManager:
         self.on_event = on_event
         self.settings = AlertingSettings()
         self.episodes: dict[tuple[int, str], Episode] = {}
+        self.sent: dict[str, Sent] = {}
         self.ceiling_hit_at: float | None = None
 
     async def load(self) -> None:
@@ -126,11 +142,11 @@ class AlertManager:
         self, now: float, matches: list[Match], places: dict[int, Place]
     ) -> list[int]:
         """Update episodes for this evaluation cycle. Returns ids of newly created alerts."""
-        seen: set[tuple[int, str]] = set()
+        seen: dict[tuple[int, str], Match] = {}
         new_by_hex: dict[str, list[tuple[Match, int]]] = defaultdict(list)
         for m in matches:
             key = (m.filter.id, m.facts.hex)
-            seen.add(key)
+            seen[key] = m
             place = display_place(m.filter.definition.display_place_id, m.facts)
             dist = fmt.distance_for(m.facts, place)
             ep = self.episodes.get(key)
@@ -155,12 +171,47 @@ class AlertManager:
                     (now, ep.last_matched_at, ep.closest_nm, ep.closest_at, ep.alert_id),
                 )
                 del self.episodes[key]
+        for hex_, sent in list(self.sent.items()):
+            if sent.lead not in self.episodes:
+                del self.sent[hex_]
 
         created: list[int] = []
         for hex_, items in new_by_hex.items():
             created.extend(a for _, a in items)
             await self._notify(hex_, items, places, now)
+        for hex_, sent in list(self.sent.items()):
+            lead = seen.get(sent.lead)
+            if lead is not None and hex_ not in new_by_hex:
+                await self._maybe_update_eta(sent, lead, now)
         return created
+
+    async def _maybe_update_eta(self, sent: Sent, m: Match, now: float) -> None:
+        n = m.filter.definition.notify
+        old = sent.out.eta_at
+        if not n.update_eta or old is None or sent.updates >= ETA_UPDATE_MAX:
+            return
+        if now - sent.last_sent_at < ETA_UPDATE_MIN_GAP_S or old <= now:
+            return
+        place = display_place(m.filter.definition.display_place_id, m.facts)
+        eta = fmt.eta_seconds(m.facts, place)
+        if eta is None or eta <= 0:
+            return
+        eta_at = now + eta
+        if abs(eta_at - old) < ETA_UPDATE_MIN_SHIFT_S:
+            return
+        if await self.sent_today(now) >= self.settings.daily_ceiling:
+            self.ceiling_hit_at = now
+            return
+        values = fmt.template_values(m.facts, place, list(sent.filter_names))
+        title, message = self._render(m, values)
+        out = replace(sent.out, title=title, message=message, eta_at=eta_at, update=True)
+        error = await self._send(out)
+        await self._record(out, "update", now, error)
+        if error is None:
+            sent.out, sent.last_sent_at = out, now
+            sent.updates += 1
+        else:
+            log.warning("notification update failed: %s", error)
 
     async def _touch(self, ep: Episode) -> None:
         ep.touched_at = ep.last_matched_at
@@ -284,21 +335,15 @@ class AlertManager:
         place = display_place(lead.filter.definition.display_place_id, lead.facts)
         names = [m.filter.name for m, _ in sendable]
         values = fmt.template_values(lead.facts, place, names)
-        title = (
-            fmt.render(n.title_template, values) if n.title_template else fmt.default_title(values)
-        )
-        message = (
-            fmt.render(n.message_template, values)
-            if n.message_template
-            else fmt.default_message(values)
-        )
+        title, message = self._render(lead, values)
         track = lead.facts.track
         pa = track.info.plane_alert if track.info else None
         image = pa.images[0] if n.include_photo and pa and pa.images else None
+        eta = fmt.eta_seconds(lead.facts, place)
         out = OutgoingNotification(
             hex=hex_,
-            title=title[:200],
-            message=message[:1000],
+            title=title,
+            message=message,
             channel=n.channel,
             priority=n.priority,
             alarm_stream=any(m.filter.definition.notify.alarm_stream for m, _ in sendable),
@@ -306,32 +351,11 @@ class AlertManager:
             click_url=f"{self.public_url}/#/aircraft/{hex_}" if self.public_url else None,
             military=bool(track.classification and track.classification.military),
             alert_ids=tuple(a for _, a in sendable),
+            eta_at=now + eta if eta is not None and eta > 0 else None,
         )
-        error: str | None = None
-        notifier = await self.get_notifier()
-        if notifier is None:
-            error = "Home Assistant is not configured"
-        else:
-            try:
-                await notifier.send(out)
-            except NotifyError as e:
-                error = str(e)
-        ids = [a for _, a in sendable]
-        await self.db.insert(
-            "INSERT INTO notifications(hex, alert_ids, channel, kind, sent_at, title, message, ok, "
-            "error) VALUES (?, ?, ?, 'new', ?, ?, ?, ?, ?)",
-            (
-                hex_,
-                json.dumps(ids),
-                out.channel,
-                now,
-                out.title,
-                out.message,
-                int(error is None),
-                error,
-            ),
-        )
-        for alert_id in ids:
+        error = await self._send(out)
+        await self._record(out, "new", now, error)
+        for alert_id in out.alert_ids:
             await self.db.execute(
                 "UPDATE alerts SET notified = ?, title = ?, message = ?, suppressed_reason = ? "
                 "WHERE id = ?",
@@ -340,6 +364,41 @@ class AlertManager:
             )  # fmt: skip
         if error:
             log.warning("notification failed: %s", error)
+        else:
+            self.sent[hex_] = Sent((lead.filter.id, hex_), out, tuple(names), now)
+
+    @staticmethod
+    def _render(m: Match, values: dict[str, str]) -> tuple[str, str]:
+        n = m.filter.definition.notify
+        title = (
+            fmt.render(n.title_template, values) if n.title_template else fmt.default_title(values)
+        )
+        message = (
+            fmt.render(n.message_template, values)
+            if n.message_template
+            else fmt.default_message(values)
+        )
+        return title[:200], message[:1000]
+
+    async def _send(self, out: OutgoingNotification) -> str | None:
+        notifier = await self.get_notifier()
+        if notifier is None:
+            return "Home Assistant is not configured"
+        try:
+            await notifier.send(out)
+        except NotifyError as e:
+            return str(e)
+        return None
+
+    async def _record(
+        self, out: OutgoingNotification, kind: str, now: float, error: str | None
+    ) -> None:
+        await self.db.insert(
+            "INSERT INTO notifications(hex, alert_ids, channel, kind, sent_at, title, message, ok, "
+            "error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (out.hex, json.dumps(list(out.alert_ids)), out.channel, kind, now, out.title,
+             out.message, int(error is None), error),
+        )  # fmt: skip
 
     def _emit(self, m: Match, alert_id: int, now: float, notified: bool) -> None:
         if self.on_event is None:
