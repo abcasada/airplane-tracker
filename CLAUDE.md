@@ -2,27 +2,28 @@
 
 Personal ADS-B aircraft alert service. It polls free ADS-B aggregators around the user's active places, enriches and classifies aircraft (with a strong focus on military), computes generic facts (visibility, arrival score, area entry, predictions with confidence), and runs **user-built filters** over them. It pushes matches to Android through Home Assistant. It ships as **one lightweight Docker container** on a shared home server. The PWA web UI is exposed via a Cloudflare Tunnel behind built-in auth with TOTP 2FA. **The filter dashboard is the product.** The user spends their time fine-tuning filters there.
 
-**Status:** planning. The full design, data-source research and phase order are in **`docs/PLAN.md`**; read it before starting any phase. Don't start a phase the user hasn't approved. When the design changes, update `docs/PLAN.md` in the same commit.
+**Status:** Phase 0 done (skeleton, auth with TOTP, setup, places, HA settings, Docker, CI). The full design, data-source research and phase order are in **`docs/PLAN.md`**; read it before starting any phase. Don't start a phase the user hasn't approved. When the design changes, update `docs/PLAN.md` in the same commit.
 
 ## Stack (planned)
 
-- Backend: Python 3.12, FastAPI, uvicorn (**single worker**, asyncio), httpx, pydantic v2, aiosqlite (SQLite WAL), numpy (prediction ensemble), shapely (polygon area targets), argon2-cffi, pyotp.
+- Backend: Python 3.13, FastAPI, uvicorn (**single worker**, asyncio), httpx, pydantic v2, aiosqlite (SQLite WAL), numpy (prediction ensemble), shapely (polygon area targets), argon2-cffi, pyotp.
 - Frontend: Svelte + Vite SPA, Leaflet, SSE for live data, PWA manifest + service worker. Built to static files and served by FastAPI.
 - Tooling: `uv`, `ruff`, `mypy --strict`, `pytest`; `npm`, `svelte-check`.
 - Container: multi-stage Dockerfile, non-root, `/data` volume, `mem_limit: 256m`.
 
 ## Commands
 
-The project doesn't exist yet; Phase 0 creates these. Keep this section in sync once it does.
+Keep this section in sync with the real commands.
 
 ```bash
 cd backend && uv sync                          # install
 uv run ruff check . && uv run ruff format --check .
-uv run mypy app
-uv run pytest                                  # unit + scenario + replay-fixture tests
-uv run python -m app.replay <recording-dir> --place home  # prediction metrics on recorded data
-cd frontend && npm ci && npm run check && npm run build
-docker compose up --build
+uv run mypy app tests
+uv run pytest -q                               # unit + scenario + replay-fixture tests
+ENV=development DATA_DIR=./.devdata uv run python -m app.main   # dev server on :8080
+cd frontend && npm ci && npm run check && npm test && npm run build   # build → backend/static
+npm run dev                                    # Vite on :5173, proxies /api to :8080
+docker compose up -d --build                   # app + cloudflared (needs .env)
 ```
 
 Before every commit: lint, typecheck and tests must pass for any side you touched.

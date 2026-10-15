@@ -49,7 +49,7 @@ The design goal is **one small container, one process, no extra databases**.
 
 | Layer | Choice | Why |
 |---|---|---|
-| Backend | **Python 3.12, FastAPI, uvicorn (single worker), asyncio** | One event loop runs the pollers, the evaluation loop and the HTTP API. |
+| Backend | **Python 3.13, FastAPI, uvicorn (single worker), asyncio** | One event loop runs the pollers, the evaluation loop and the HTTP API. |
 | HTTP client | `httpx` (async, gzip) | |
 | Storage | **SQLite** (WAL) via `aiosqlite`, numbered SQL migrations | Config, places, filters (+ versions), alert history, sightings, caches, imported aircraft DBs |
 | Live state | In-process memory (per-aircraft ring buffers) | Rebuilt within one poll after a restart |
@@ -61,7 +61,7 @@ The design goal is **one small container, one process, no extra databases**.
 | Live updates | Server-Sent Events | Heartbeat every 20 s, because Cloudflare closes idle responses after ~100 s |
 | PWA | Manifest + small service worker (app shell only) | Android Chrome installs it as an app |
 | Tooling | `uv`, `ruff`, `mypy --strict`, `pytest`, `respx`; `npm`, `svelte-check`, `vitest` | |
-| Container | Multi-stage build, `python:3.12-slim`, non-root, `/data` volume, healthcheck | Targets: under 200 MB image, under 150 MB RSS (backtests may briefly use more), under 2% CPU average |
+| Container | Multi-stage build, `python:3.13-slim`, non-root, `/data` volume, healthcheck | Targets: under 200 MB image, under 150 MB RSS (backtests may briefly use more), under 2% CPU average |
 
 ### 2.1 Deployment: Cloudflare Tunnel + Home Assistant on the same host
 

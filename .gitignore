@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Frontend
+node_modules/
+frontend/dist/
+backend/static/
+
+# Runtime data and secrets (never commit)
+/data/
+*.sqlite3
+*.sqlite3-*
+.env
+*.key
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
