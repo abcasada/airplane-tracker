@@ -335,3 +335,26 @@ export interface BacktestJob {
   error: string | null
   elapsed_s: number
 }
+
+// ---- airspace -------------------------------------------------------------------------------
+
+export interface AirspaceLimit {
+  ft: number | null
+  ref: 'MSL' | 'AGL' | 'SFC' | 'UNL'
+  text: string
+}
+
+export interface Airspace {
+  name: string
+  type: string
+  floor: AirspaceLimit
+  ceiling: AirspaceLimit
+  polygon: [number, number][]
+  center: [number, number]
+  radius_nm: number
+  times_of_use: string | null
+  schedule: { days: number[]; start: string; end: string; tz: string } | null
+  location: string
+  controlling_agency: string | null
+  parts_dropped: number
+}

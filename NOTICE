@@ -13,6 +13,11 @@ included in this repository.
   individual contents under the Database Contents License (DbCL) 1.0.
 - VRS standing data by Virtual Radar Server (https://github.com/vradarserver/standing-data). CC0.
 - adsb.im route API (https://adsb.im).
+- Planespotters.net photo API (https://www.planespotters.net). Photos are shown only in the web UI,
+  with the photographer credit and a link, as its terms require.
 - OurAirports (https://ourairports.com/data/). Public domain.
+- FAA Aeronautical Data Delivery Service (ADDS), special use airspace
+  (https://adds-faa.opendata.arcgis.com/). US government work, public domain. Queried only when
+  the user searches for airspace, and cached.
 - Map tiles (c) OpenStreetMap contributors (https://www.openstreetmap.org/copyright).
 - USGS Elevation Point Query Service (https://epqs.nationalmap.gov). Public domain.

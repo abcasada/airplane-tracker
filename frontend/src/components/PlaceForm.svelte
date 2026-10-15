@@ -1,7 +1,10 @@
 <script lang="ts">
   import { errorMessage, get } from '../lib/api'
+  import { catalog, loadCatalog } from '../lib/catalog.svelte'
+  import { onMount } from 'svelte'
   import { toast } from '../lib/toast.svelte'
-  import { defaultVisibility, type PlaceIn } from '../lib/types'
+  import { defaultVisibility, type Airspace, type PlaceIn } from '../lib/types'
+  import AirspaceSearch from './AirspaceSearch.svelte'
   import MapPicker from './MapPicker.svelte'
 
   let {
@@ -30,6 +33,17 @@
     } catch {
       return null
     }
+  })
+
+  onMount(() => {
+    loadCatalog().catch(() => {})
+  })
+
+  // Search near the area, or near home while the area is still empty.
+  const searchCenter = $derived.by(() => {
+    if (value.lat || value.lon) return { lat: value.lat, lon: value.lon }
+    const home = catalog.places.find((p) => p.is_home)
+    return home ? { lat: home.lat, lon: home.lon } : null
   })
 
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -126,6 +140,30 @@
     )
   }
 
+  let fitTo = $state<[number, number][] | null>(null)
+
+  async function useAirspace(a: Airspace) {
+    value.polygon = a.polygon
+    polygonText = a.polygon.map(([lat, lon]) => `${lat}, ${lon}`).join('\n')
+    fitTo = a.polygon
+    value.lat = a.center[0]
+    value.lon = a.center[1]
+    value.radius_nm = a.radius_nm
+    if (!value.name) value.name = a.name
+    if (a.schedule) value.schedule = { ...a.schedule }
+    // Limits "above ground" become MSL using the area's ground elevation, which needs a lookup.
+    const agl = a.floor.ref === 'AGL' || a.ceiling.ref === 'AGL'
+    if (agl) await lookupElevation()
+    const msl = (l: Airspace['floor']) => (l.ft === null ? null : l.ref === 'AGL' ? l.ft + value.elevation_ft : l.ft)
+    value.alt_floor_ft = msl(a.floor)
+    value.alt_ceiling_ft = a.ceiling.ref === 'UNL' ? null : msl(a.ceiling)
+    const notes = [
+      agl ? `${a.floor.text} → ${value.alt_floor_ft} ft MSL using ground elevation ${value.elevation_ft} ft` : '',
+      a.schedule ? `active hours from "${a.times_of_use}" (${a.schedule.tz})` : '',
+    ].filter(Boolean)
+    toast(`Imported ${a.name}${notes.length ? `: ${notes.join('; ')}` : ''}. Check before saving.`)
+  }
+
   async function lookupElevation() {
     try {
       const r = await get<{ elevation_ft: number | null }>(
@@ -206,7 +244,7 @@
   {/if}
 
   <div>
-    <MapPicker lat={value.lat} lon={value.lon} radiusNm={value.radius_nm} polygon={value.role === 'area' ? livePolygon : null} onpick={pick} />
+    <MapPicker lat={value.lat} lon={value.lon} radiusNm={value.radius_nm} polygon={value.role === 'area' ? livePolygon : null} onpick={pick} {fitTo} />
     <p class="muted small hint-line">
       {value.role === 'area' ? 'Click the map to add corners in order, or paste coordinates below.' : 'Click the map to set the location.'}
       {#if value.role === 'area' && polygonText.trim()}<button type="button" class="small ghost" onclick={undoPoint}>Undo last corner</button>{/if}
@@ -214,6 +252,7 @@
   </div>
 
   {#if value.role === 'area'}
+    <AirspaceSearch near={searchCenter} onuse={useAirspace} />
     <label class="field">
       Polygon corners <span class="hint">One "lat, lon" pair per line, decimal degrees.</span>
       <textarea rows="6" bind:value={polygonText} placeholder="38.7556, -97.7669"></textarea>

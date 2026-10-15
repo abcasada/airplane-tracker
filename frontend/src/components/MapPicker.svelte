@@ -9,12 +9,14 @@
     radiusNm,
     polygon,
     onpick,
+    fitTo = null,
   }: {
     lat: number
     lon: number
     radiusNm: number
     polygon: [number, number][] | null
     onpick: (lat: number, lon: number) => void
+    fitTo?: [number, number][] | null // zoom to these points whenever a new list is passed
   } = $props()
 
   let el: HTMLDivElement
@@ -28,6 +30,10 @@
     map.on('click', (e: L.LeafletMouseEvent) => onpick(+e.latlng.lat.toFixed(5), +e.latlng.lng.toFixed(5)))
     if (polygon?.length) map.fitBounds(L.latLngBounds(polygon).pad(0.3))
     return () => map?.remove()
+  })
+
+  $effect(() => {
+    if (map && fitTo?.length) map.fitBounds(L.latLngBounds(fitTo).pad(0.3))
   })
 
   $effect(() => {

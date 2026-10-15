@@ -1,4 +1,18 @@
 <script lang="ts">
+  // Mirrors NOTICE. Keep both in sync when adding a source.
+  const CREDITS = [
+    { name: 'adsb.fi', url: 'https://adsb.fi', note: 'live positions (open data API, personal non-commercial use)' },
+    { name: 'adsb.lol', url: 'https://adsb.lol', note: 'live positions, backup (ODbL 1.0)' },
+    { name: 'tar1090-db', url: 'https://github.com/wiedehopf/tar1090-db', note: 'aircraft database and military address ranges (wiedehopf, from Mictronics)' },
+    { name: 'plane-alert-db', url: 'https://github.com/sdr-enthusiasts/plane-alert-db', note: 'notable aircraft and photo links (ODbL 1.0, contents DbCL 1.0)' },
+    { name: 'VRS standing data', url: 'https://github.com/vradarserver/standing-data', note: 'airlines and routes (CC0)' },
+    { name: 'adsb.im', url: 'https://adsb.im', note: 'flight routes' },
+    { name: 'Planespotters.net', url: 'https://www.planespotters.net', note: 'photos, credited on each photo' },
+    { name: 'OurAirports', url: 'https://ourairports.com/data/', note: 'airports and runways (public domain)' },
+    { name: 'FAA ADDS', url: 'https://adds-faa.opendata.arcgis.com/', note: 'special use airspace (public domain)' },
+    { name: 'USGS EPQS', url: 'https://epqs.nationalmap.gov', note: 'ground elevation (public domain)' },
+    { name: 'OpenStreetMap', url: 'https://www.openstreetmap.org/copyright', note: 'map tiles © OpenStreetMap contributors' },
+  ]
   import { onMount } from 'svelte'
   import { get, post } from '../lib/api'
   import { fmtAgo } from '../lib/format'
@@ -141,11 +155,23 @@
         History fields count only days before today, so they become meaningful after a few weeks.
       </p>
     </div>
-    <p class="muted small">Airplane Tracker {s.version}</p>
+    <div class="card">
+      <h2>Data sources and credits</h2>
+      <ul class="small credits">
+        {#each CREDITS as c (c.name)}
+          <li><a href={c.url} target="_blank" rel="noopener">{c.name}</a>: {c.note}</li>
+        {/each}
+      </ul>
+    </div>
+    <p class="muted small">Airplane Tracker {s.version} · MIT License</p>
   {/if}
 </div>
 
 <style>
+  .credits {
+    margin: 0;
+    padding-left: 18px;
+  }
   .stats > div {
     display: flex;
     flex-direction: column;

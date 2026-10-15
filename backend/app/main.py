@@ -8,7 +8,18 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
 from app import USER_AGENT, __version__
-from app.api import airports, alerts, auth, fields, filters, live, military, places, settings
+from app.api import (
+    airports,
+    airspace,
+    alerts,
+    auth,
+    fields,
+    filters,
+    live,
+    military,
+    places,
+    settings,
+)
 from app.auth.service import AuthService
 from app.auth.throttle import LoginThrottle
 from app.clock import Clock, SystemClock
@@ -102,7 +113,9 @@ def create_app(cfg: Settings | None = None, clock: Clock | None = None) -> FastA
     async def healthz() -> dict[str, str]:
         return {"status": "ok", "version": __version__}
 
-    for module in (auth, settings, places, airports, filters, fields, live, alerts, military):
+    for module in (
+        auth, settings, places, airports, airspace, filters, fields, live, alerts, military,
+    ):  # fmt: skip
         app.include_router(module.router)
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

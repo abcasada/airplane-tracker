@@ -2,7 +2,7 @@
 
 Personal ADS-B aircraft alert service. It polls free ADS-B aggregators around the user's active places, enriches and classifies aircraft (with a strong focus on military), computes generic facts (visibility, arrival score, area entry, predictions with confidence), and runs **user-built filters** over them. It pushes matches to Android through Home Assistant. It ships as **one lightweight Docker container** on a shared home server. The PWA web UI is exposed via a Cloudflare Tunnel behind built-in auth with TOTP 2FA. **The filter dashboard is the product.** The user spends their time fine-tuning filters there.
 
-**Status:** Phases 0–3 done: secure skeleton, ingest from adsb.fi/adsb.lol, enrichment datasets, military classifier, filter engine and dashboard (builder, live preview, funnel, why-not), alert episodes and Home Assistant notifications (actions, photos, countdowns); airports, routes, arrival score, travel/schedules, live map; prediction (gate + ensemble, hysteresis), replay harness with metrics, and the dashboard backtest. The full design, data-source research and phase order are in **`docs/PLAN.md`**; read it before starting any phase. Don't start a phase the user hasn't approved. When the design changes, update `docs/PLAN.md` in the same commit.
+**Status:** Phases 0–3 done, Phase 4 mostly done (history, day/night, feedback stats, FAA airspace search): secure skeleton, ingest from adsb.fi/adsb.lol, enrichment datasets, military classifier, filter engine and dashboard (builder, live preview, funnel, why-not), alert episodes and Home Assistant notifications (actions, photos, countdowns); airports, routes, arrival score, travel/schedules, live map; prediction (gate + ensemble, hysteresis), replay harness with metrics, and the dashboard backtest. The full design, data-source research and phase order are in **`docs/PLAN.md`**; read it before starting any phase. Don't start a phase the user hasn't approved. When the design changes, update `docs/PLAN.md` in the same commit.
 
 ## Stack (planned)
 
@@ -35,7 +35,7 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 
 `backend/app/`:
 
-- `sources/` — pluggable sources behind the `Source` protocol: area (adsb.fi primary, adsb.lol failover), local receiver, schedule (FAA SWIM later). Paid sources are deferred plug-ins. They **only fetch and normalize**. Rate limiting, retries and circuit breaking live in `ingest/`.
+- `sources/` — pluggable sources behind the `Source` protocol: area (adsb.fi primary, adsb.lol failover), local receiver, schedule (FAA SWIM later). `sources/airspace.py` searches FAA special use airspace for area places. Paid sources are deferred plug-ins. They **only fetch and normalize**. Rate limiting, retries and circuit breaking live in `ingest/`.
 - `ingest/` — query planner (places → inner/outer query circles, merged), poller, token-bucket rate limiter, merge-by-hex, recorder.
 - `enrich/` — tar1090-db aircraft DB + military address ranges, plane-alert-db (ODbL), adsb.im routeset → VRS standing-data → adsbdb routes, OurAirports airports and runways. All lookups go through the SQLite `cache` table.
 - `classify/` — military/government/police classifier: weighted signals → score + human-readable reasons; user overrides always win.
@@ -68,7 +68,8 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 - Stay at **≤50% of each source's published rate limit** (adsb.fi: 1 req/s ⇒ budget 0.5 req/s). adsb.lol has no published limit, so treat it the same way.
 - adsb.fi temporarily **IP-blocks after repeated 4xx**. Back off on any 4xx/429 (circuit breaker, exponential up to 5 min). Never hot-loop retries.
 - Send gzip `Accept-Encoding` and a descriptive `User-Agent` (`airplane-tracker/<version> (personal, non-commercial)`).
-- Attribution must stay visible in the UI: adsb.fi (link required), adsb.lol (ODbL), plane-alert-db (ODbL/DbCL), OpenStreetMap tiles, OurAirports.
+- Attribution must stay visible in the UI: adsb.fi (link required), adsb.lol (ODbL), plane-alert-db (ODbL/DbCL), OpenStreetMap tiles, OurAirports, FAA ADDS (airspace search).
+- FAA ADDS special use airspace: only on user search (by name or near a point), ≥1 s between requests, cached 7 days.
 - airplanes.live returned 403 "contact us" on 2026-10-14. Don't add it without the user's approval from them.
 - adsbdb route data must not be redistributed: cache it privately and never include it in exports or fixtures.
 - **Free sources only for now.** Paid APIs (FlightAware, FR24) are deferred. If added later, they must be opt-in, keyed per user, behind a monthly budget cap, looked up only for filter candidates, and cached.

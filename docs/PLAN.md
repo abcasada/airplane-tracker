@@ -571,7 +571,7 @@ Each phase ends usable, with tests passing and the container working. **The filt
 
 ### Phase 4 — History and refinement
 - Sightings history fields ("rare visitor" filters); 👍/👎 stats per filter. *Done.*
-- FAA airspace search for area polygons; day/night field. *Day/night done.*
+- FAA airspace search for area polygons; day/night field. *Done:* the area form searches FAA ADDS special use airspace by name or near a point (on demand, cached 7 days), merges stacked sectors with the same outline (R-3601A + B → surface to FL230), converts AGL limits with the ground elevation, and pre-fills active hours when the published times are a single window (time zone from the FAA GMT offset and DST flag).
 - Tune confidence factors on replay data; classifier-list updates from the review loop.
 
 ### Phase 5 — Optional sources and extras
