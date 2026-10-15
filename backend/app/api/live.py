@@ -100,6 +100,7 @@ async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
         "datasets": await rt.datasets.status(),
         "dataset_busy": rt.datasets.busy,
         "recordings": rt.recorder.usage(),
+        "sightings": await rt.sightings.stats(),
         "coverage": rt.coverage.report(),
         "notifications_today": await rt.alerts.sent_today(now),
         "daily_ceiling": rt.alerts.settings.daily_ceiling,

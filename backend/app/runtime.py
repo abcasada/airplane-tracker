@@ -30,6 +30,7 @@ from app.filters.models import (
     NotifySettings,
 )
 from app.filters.repo import FilterRepo
+from app.history import SightingsBook, day_of
 from app.ingest.planner import PlannerConfig, QueryCircle, plan
 from app.ingest.poller import Poller
 from app.ingest.recorder import Recorder
@@ -81,6 +82,7 @@ class Runtime:
         )
         self.predictor = Predictor()
         self.backtester = Backtester(self)
+        self.sightings = SightingsBook(ctx.db)
         self.planner_cfg = PlannerConfig(outer_enabled=True)
         self.poller = Poller(
             [readsb.adsbfi(ctx.http, ctx.clock), readsb.adsblol(ctx.http, ctx.clock)],
@@ -136,6 +138,10 @@ class Runtime:
 
     async def stop(self) -> None:
         await self.backtester.cancel_all()
+        try:
+            await self.sightings.flush(self.ctx.clock.now())
+        except Exception:
+            log.exception("could not save sightings")
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -158,6 +164,9 @@ class Runtime:
                     await self.refresh_enrichment()
                 self.recorder.prune(self.ctx.clock.now())
                 await ExclusionRepo(self.ctx.db, self.ctx.clock).prune()
+                await self.sightings.prune(
+                    self.ctx.clock.now(), self.alerts.tz, {p.id for p in self.places}
+                )
                 await self.ctx.db.set_json("coverage", self.coverage.to_json())
             except Exception:
                 log.exception("maintenance failed")
@@ -332,9 +341,8 @@ class Runtime:
 
     def eval_context(self, now: float | None = None) -> EvalContext:
         tz: ZoneInfo = self.alerts.tz
-        return EvalContext(
-            now or self.ctx.clock.now(), self.places_by_id(), tz, {"runways": self.runways}
-        )
+        extras = {"runways": self.runways, "sightings": self.sightings}
+        return EvalContext(now or self.ctx.clock.now(), self.places_by_id(), tz, extras)
 
     def facts_for_all(self, ctx: EvalContext) -> list[LiveFacts]:
         return [LiveFacts(t, ctx) for t in self.store.values()]
@@ -343,7 +351,11 @@ class Runtime:
         started = time.perf_counter()
         now = self.ctx.clock.now()
         ectx = self.eval_context(now)
-        self.predictor.update(self.store.values(), self.places, now, self.runways)
+        tracks = self.store.values()
+        self.sightings.record(tracks, [p for p in self.places if p.is_active(now)], now, ectx.tz)
+        await self.sightings.prepare(tracks, day_of(now, ectx.tz))
+        await self.sightings.maybe_flush(now)
+        self.predictor.update(tracks, self.places, now, self.runways)
         all_facts = self.facts_for_all(ectx)
         matches: list[Match] = []
         by_hex: dict[str, list[int]] = {}

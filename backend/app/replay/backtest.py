@@ -24,6 +24,7 @@ from app.filters.exclusions import Exclusion, is_excluded
 from app.filters.facts import LiveFacts
 from app.filters.fields import FIELDS
 from app.filters.models import FilterDefinition
+from app.history import SightingsBook
 from app.ingest.recorder import read_batches
 from app.predict.engine import Predictor
 from app.sources.base import Observation
@@ -274,6 +275,7 @@ class Backtester:
                 predictor=Predictor(rt.predictor.settings, paths=False) if predict else None,
                 runways=rt.runways,
                 tz=rt.alerts.tz,
+                history=SightingsBook(rt.ctx.db, read_only=True),
             )
             engine = BacktestEngine(
                 spec, draft, saved if saved and saved.valid else None,

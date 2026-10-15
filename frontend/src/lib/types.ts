@@ -171,6 +171,7 @@ export interface Filter extends FilterIn {
   alerts_today: number
   notified_today: number
   last_alert_at: number | null
+  stats_30d: { alerts: number; notified: number; up: number; down: number }
 }
 
 export interface AircraftSummary {

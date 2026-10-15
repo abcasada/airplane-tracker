@@ -16,9 +16,11 @@ from typing import Any, Literal
 from app import geo
 from app.classify.size import SIZE_CLASSES, size_for
 from app.enrich.routes import RouteFit, fit_route
+from app.history import day_of
 from app.places.models import Place
 from app.predict.arrival import ArrivalInputs, arrival_score
 from app.predict.engine import is_active, prediction_for
+from app.sun import CIVIL_DARK_DEG, SUNRISE_DEG, sun_elevation_deg
 
 from .facts import LiveFacts
 
@@ -327,10 +329,33 @@ def _flag(attr: str) -> Compute:
     return compute
 
 
+def _sun(f: LiveFacts, p: Place | None) -> float | None:
+    if p is None:
+        return None
+    memo: dict[int, float] = f.ctx.extras.setdefault("_sun", {})
+    if p.id not in memo:
+        memo[p.id] = sun_elevation_deg(f.ctx.now, p.lat, p.lon)
+    return memo[p.id]
+
+
+def _history(method: str) -> Compute:
+    def compute(f: LiveFacts, p: Place | None) -> Any:
+        book = f.ctx.extras.get("sightings")
+        if book is None or p is None:
+            return None
+        day = day_of(f.ctx.now, f.ctx.tz)
+        if method == "type_visits_before":
+            return book.type_visits_before(f.track.type_code, p.id, day)
+        return getattr(book, method)(f.hex, p.id, day)
+
+    return compute
+
+
 # ---- catalog ------------------------------------------------------------------------------------
 
-ID, AC, CL, ST, PL, PR, RT, TM = (
-    "Identity", "Aircraft", "Classification", "State", "Place", "Prediction", "Route", "Time"
+ID, AC, CL, ST, PL, PR, RT, HI, TM = (
+    "Identity", "Aircraft", "Classification", "State", "Place", "Prediction", "Route", "History",
+    "Time",
 )  # fmt: skip
 
 for fd in [
@@ -541,6 +566,33 @@ for fd in [
     FieldDef("day_of_week", "Day of week", TM, "enum", "Local day of the week.",
              lambda f, _: WEEKDAYS[_local_dt(f).weekday()],
              enum=tuple((d, d) for d in WEEKDAYS)),
+    FieldDef("sun_elevation_deg", "Sun elevation", TM, "number",
+             "How high the sun is above the place's horizon; negative below it. About −0.8° "
+             "at sunrise/sunset, −6° at the end of civil twilight.",
+             _sun, unit="°", place=True, aggregate="max"),
+    FieldDef("daylight", "Daylight", TM, "bool",
+             "The sun is up at the place (between sunrise and sunset).",
+             lambda f, p: None if (e := _sun(f, p)) is None else e > SUNRISE_DEG, place=True),
+    FieldDef("dark", "Dark", TM, "bool",
+             "After civil twilight at the place: dark enough that aircraft lights stand out "
+             "and the airframe is hard to see.",
+             lambda f, p: None if (e := _sun(f, p)) is None else e < CIVIL_DARK_DEG, place=True),
+    FieldDef("visits_prev_30d", "Visits in the last 30 days", HI, "number",
+             "Days in the 30 days before today that this aircraft came within the place's watch "
+             "radius. 0 = not seen here for a month. History starts when the app does.",
+             _history("visits_before"), unit="days", place=True),
+    FieldDef("days_since_visit", "Days since last visit", HI, "number",
+             "Days since it was last within the place's watch radius, before today. Empty if "
+             "it has never been seen there (see 'First visit'). History is kept 180 days.",
+             _history("days_since_visit"), unit="days", place=True),
+    FieldDef("first_visit", "First visit", HI, "bool",
+             "Never seen within the place's watch radius before today, as far back as the "
+             "history goes (180 days, or since the app started).",
+             _history("first_visit"), place=True),
+    FieldDef("type_visits_prev_30d", "Type's visits in the last 30 days", HI, "number",
+             "Days in the 30 days before today that any aircraft of this type came within the "
+             "place's watch radius. Low numbers mean an unusual type here.",
+             _history("type_visits_before"), unit="days", place=True),
 ]:  # fmt: skip
     _add(fd)
 

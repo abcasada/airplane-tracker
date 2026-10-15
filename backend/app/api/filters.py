@@ -74,6 +74,11 @@ async def _with_meta(ctx: AppContext, f: FilterOut) -> dict[str, Any]:
         (f.id, day_start.timestamp()),
     )
     last = await ctx.db.fetchone("SELECT max(started_at) FROM alerts WHERE filter_id = ?", (f.id,))
+    month = await ctx.db.fetchone(
+        "SELECT count(*) AS n, sum(notified) AS notified, sum(feedback = 'up') AS up, "
+        "sum(feedback = 'down') AS down FROM alerts WHERE filter_id = ? AND started_at >= ?",
+        (f.id, ctx.clock.now() - 30 * 86400),
+    )
     return {
         **f.model_dump(),
         "summary": describe(f.definition, places),
@@ -82,6 +87,12 @@ async def _with_meta(ctx: AppContext, f: FilterOut) -> dict[str, Any]:
         "alerts_today": row["today"] if row else 0,
         "notified_today": (row["notified_today"] or 0) if row else 0,
         "last_alert_at": last[0] if last else None,
+        "stats_30d": {
+            "alerts": month["n"] if month else 0,
+            "notified": (month["notified"] or 0) if month else 0,
+            "up": (month["up"] or 0) if month else 0,
+            "down": (month["down"] or 0) if month else 0,
+        },
     }
 
 

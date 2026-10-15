@@ -9,6 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.filters.facts import EvalContext, LiveFacts
+from app.history import SightingsBook, day_of
 from app.places.models import Place
 from app.predict.arrival import Runway
 from app.predict.engine import Predictor
@@ -32,10 +33,11 @@ class Replay:
     runways: dict[int, list[Runway]] = field(default_factory=dict)
     tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("UTC"))
     store: TrackStore = field(default_factory=TrackStore)
+    history: SightingsBook | None = None  # read-only: counts only days before the replayed one
 
     def __post_init__(self) -> None:
         self._by_id = {p.id: p for p in self.places}
-        self._extras: dict[str, Any] = {"runways": self.runways}
+        self._extras: dict[str, Any] = {"runways": self.runways, "sightings": self.history}
 
     async def step(self, fetched_at: float, observations: list[Observation]) -> Cycle:
         for obs in observations:
@@ -44,7 +46,9 @@ class Replay:
                 await self.enrich(track, is_new)
         self.store.expire(fetched_at)
         tracks = self.store.values()
+        if self.history is not None:
+            await self.history.prepare(tracks, day_of(fetched_at, self.tz))
         if self.predictor is not None:
             self.predictor.update(tracks, self.places, fetched_at, self.runways)
-        ctx = EvalContext(fetched_at, self._by_id, self.tz, self._extras)
+        ctx = EvalContext(fetched_at, self._by_id, self.tz, dict(self._extras))
         return Cycle(fetched_at, [LiveFacts(t, ctx) for t in tracks])

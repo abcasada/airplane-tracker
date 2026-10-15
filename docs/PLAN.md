@@ -374,7 +374,7 @@ notifications(id PK, alert_id, channel, sent_at, kind ('new','update','emergency
               payload_json, ok, error)
 suppression_state(key PK, last_notified_at, count_window)     -- only used by opt-in suppression settings
 
-sightings(hex, place_id, day, first_at, last_at, min_dist_nm, PK(hex, place_id, day))   -- history fields
+sightings(hex, place_id, day, type_code, first_at, last_at, min_dist_nm, PK(hex, place_id, day))   -- history fields
 
 aircraft_db(icao PK, reg, type_code, flags, descr, year, own_op, db_version)
 plane_alert(icao PK, reg, operator, type, icao_type, cmpg, tag1, tag2, tag3, category, link, db_version)
@@ -468,6 +468,8 @@ Preview and backtest therefore always agree with what would actually notify.
 | Route | origin, destination, legs, route source, route plausible |
 | History | times seen at this place in the last N days, first-ever sighting, last seen. This enables JetTip-style **"rare visitor"** filters without any built-in definition of "rare". |
 | Time | local time of day, day of week, date range, day/night |
+
+*Built (Phase 4):* a sighting is a local day on which the aircraft came within a place's **watch radius** (`radius_nm`). Fields, all per place: `visits_prev_30d`, `days_since_visit`, `first_visit` and `type_visits_prev_30d` (days any aircraft of the type was there). They count only days **before today**, so being here now doesn't change them, and replays and backtests see only the history before the replayed day. History is kept 180 days. Today's sightings stay in memory and are flushed every minute; past days load lazily per aircraft and type into bounded caches. Day/night: `sun_elevation_deg`, `daylight` (sun above −0.833°) and `dark` (below −6°, after civil twilight), per place, from the NOAA solar equations.
 
 **Operators:** `=`, `≠`, `in list`, `glob`, `regex` (validated), `<`, `≤`, `between`, `exists`, `is true/false`.
 
@@ -568,8 +570,8 @@ Each phase ends usable, with tests passing and the container working. **The filt
 - *Status: done* (see §7.3–7.5, §9 and §10.3 for what was built and what's deferred).
 
 ### Phase 4 — History and refinement
-- Sightings history fields ("rare visitor" filters); 👍/👎 stats per filter.
-- FAA airspace search for area polygons; day/night field.
+- Sightings history fields ("rare visitor" filters); 👍/👎 stats per filter. *Done.*
+- FAA airspace search for area polygons; day/night field. *Day/night done.*
 - Tune confidence factors on replay data; classifier-list updates from the review loop.
 
 ### Phase 5 — Optional sources and extras

@@ -24,6 +24,7 @@
     datasets: { name: string; url: string; rows?: number; imported_at?: number; checked_at?: number; last_error?: string }[]
     dataset_busy: string | null
     recordings: { days: number; bytes: number; retention_days?: number }
+    sightings: { rows?: number; days?: number; since?: string | null }
     coverage: { band: string; lowest_height_ft: number | null; reports: number; ground_reports: number }[]
     notifications_today: number
     daily_ceiling: number
@@ -135,6 +136,10 @@
         </table>
       </div>
       <p class="muted small">Recordings for replay: {s.recordings.days} day(s), {mb(s.recordings.bytes)}.</p>
+      <p class="muted small">
+        Sightings history (for "rare visitor" fields): {s.sightings.days ?? 0} day(s){s.sightings.since ? ` since ${s.sightings.since}` : ''}.
+        History fields count only days before today, so they become meaningful after a few weeks.
+      </p>
     </div>
     <p class="muted small">Airplane Tracker {s.version}</p>
   {/if}

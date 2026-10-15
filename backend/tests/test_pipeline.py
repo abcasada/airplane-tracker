@@ -269,3 +269,17 @@ async def test_predicted_alert_has_countdown_and_updates_in_place(authed: Harnes
     alert = (await c.get("/api/alerts")).json()[0]
     detail = (await c.get(f"/api/alerts/{alert['id']}")).json()
     assert [n["kind"] for n in detail["notifications"]] == ["new", "update"]
+
+
+@respx.mock
+async def test_filter_list_has_30_day_feedback_stats(authed: Harness) -> None:
+    fid = await _setup(authed)
+    respx.post(f"{HA}/api/services/notify/mobile_app_x").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    await _feed(authed, c17(authed.clock.now()))
+    alert = (await authed.client.get("/api/alerts")).json()[0]
+    r = await authed.client.post(f"/api/alerts/{alert['id']}/feedback", json={"value": "up"})
+    assert r.status_code == 200
+    flt = next(f for f in (await authed.client.get("/api/filters")).json() if f["id"] == fid)
+    assert flt["stats_30d"] == {"alerts": 1, "notified": 1, "up": 1, "down": 0}

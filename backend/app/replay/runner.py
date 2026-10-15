@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.filters.engine import CompiledFilter
+from app.history import SightingsBook
 from app.ingest.recorder import read_batches
 from app.predict.engine import PredictionSettings, Predictor
 
@@ -33,6 +34,7 @@ async def evaluate_recordings(
         predictor=Predictor(settings, seed, paths=False),
         runways=rt.runways,
         tz=rt.alerts.tz,
+        history=SightingsBook(rt.ctx.db, read_only=True),
     )
     metrics = MetricsCollector(rt.places, settings.lead_max_s)
     places = rt.places_by_id()

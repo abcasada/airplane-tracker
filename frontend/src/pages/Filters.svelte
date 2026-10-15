@@ -141,6 +141,12 @@
           <span><strong>{f.matching_now}</strong> matching now</span>
           <span><strong>{f.alerts_today}</strong> today ({f.notified_today} notified)</span>
           {#if f.last_alert_at}<span>last {fmtAgo(f.last_alert_at)}</span>{/if}
+          {#if f.stats_30d.alerts}
+            <span title="Last 30 days. Rate alerts with 👍/👎 on the Alerts page or from the notification.">
+              {f.stats_30d.alerts} in 30 days{#if f.stats_30d.up || f.stats_30d.down}
+                · 👍 {f.stats_30d.up} 👎 {f.stats_30d.down}{/if}
+            </span>
+          {/if}
         </div>
         <div class="row actions">
           <button class="icon ghost" title="Move up" disabled={i === 0} onclick={() => move(i, -1)}>↑</button>
