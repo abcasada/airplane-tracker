@@ -70,3 +70,202 @@ export function blankPlace(role: PlaceRole = 'viewpoint'): PlaceIn {
     source: 'manual',
   }
 }
+
+// ---- filters --------------------------------------------------------------------------------
+
+export type FieldType = 'number' | 'string' | 'bool' | 'enum' | 'list'
+
+export interface FieldDef {
+  key: string
+  label: string
+  group: string
+  type: FieldType
+  unit: string | null
+  help: string
+  place: boolean
+  place_roles: PlaceRole[]
+  ops: string[]
+  enum: { value: string; label: string }[]
+  suggest: string | null
+}
+
+export interface Condition {
+  type: 'cond'
+  id: string
+  field: string
+  op: string
+  value: unknown
+  place: number | null
+  enabled: boolean
+}
+
+export interface Group {
+  type: 'group'
+  id: string
+  mode: 'all' | 'any' | 'none'
+  children: (Condition | Group)[]
+  enabled: boolean
+}
+
+export interface QuietHours {
+  start: string
+  end: string
+}
+
+export interface NotifySettings {
+  enabled: boolean
+  priority: 'low' | 'normal' | 'high' | 'critical'
+  channel: string
+  alarm_stream: boolean
+  include_photo: boolean
+  title_template: string | null
+  message_template: string | null
+  repeat_suppress_min: number | null
+  max_per_day: number | null
+  quiet_hours: QuietHours | null
+}
+
+export interface FilterDefinition {
+  root: Group
+  display_place_id: number | null
+  notify: NotifySettings
+}
+
+export interface FilterIn {
+  name: string
+  description: string
+  enabled: boolean
+  mode: 'live' | 'shadow'
+  definition: FilterDefinition
+  note?: string
+}
+
+export interface Filter extends FilterIn {
+  id: number
+  sort_order: number
+  version: number
+  version_id: number
+  created_at: number
+  updated_at: number
+  summary: string
+  errors: string[]
+  matching_now: number
+  alerts_today: number
+  notified_today: number
+  last_alert_at: number | null
+}
+
+export interface AircraftSummary {
+  hex: string
+  callsign: string | null
+  registration: string | null
+  type_code: string | null
+  type_desc: string | null
+  operator: string | null
+  lat: number | null
+  lon: number | null
+  altitude_ft: number | null
+  on_ground: boolean
+  gs_kt: number | null
+  track_deg: number | null
+  vertical_rate_fpm: number | null
+  squawk: string | null
+  category: string | null
+  pos_source: string
+  seen_s: number
+  military: boolean
+  military_score: number | null
+  government: boolean
+  police: boolean
+  plane_alert_category: string | null
+  distance_nm: number | null
+  direction: string | null
+  elevation_deg: number | null
+  visible: boolean | null
+  filters: number[]
+}
+
+export interface FunnelStep {
+  id: string | null
+  text: string
+  count: number
+}
+
+export interface PreviewResult {
+  summary: string
+  errors: string[]
+  in_range: number
+  match_count: number
+  excluded: number
+  matches: AircraftSummary[]
+  funnel: FunnelStep[]
+}
+
+export interface ExplainNode {
+  id: string
+  type: 'cond' | 'group'
+  text?: string
+  value?: unknown
+  result: boolean | null
+  enabled: boolean
+  mode?: string
+  children?: ExplainNode[]
+}
+
+export interface Alert {
+  id: number
+  filter_id: number | null
+  filter_name: string
+  mode: 'live' | 'shadow'
+  hex: string
+  callsign: string | null
+  registration: string | null
+  type_code: string | null
+  type_desc: string | null
+  military: number
+  place_id: number | null
+  state: 'active' | 'ended'
+  started_at: number
+  ended_at: number | null
+  closest_nm: number | null
+  notified: number
+  suppressed_reason: string | null
+  title: string | null
+  photo_url: string | null
+  feedback: 'up' | 'down' | null
+}
+
+let idCounter = 0
+export function newId(prefix = 'n'): string {
+  idCounter += 1
+  return `${prefix}${Date.now().toString(36)}${idCounter}`
+}
+
+export function defaultNotify(): NotifySettings {
+  return {
+    enabled: true,
+    priority: 'high',
+    channel: 'Aircraft',
+    alarm_stream: false,
+    include_photo: true,
+    title_template: null,
+    message_template: null,
+    repeat_suppress_min: null,
+    max_per_day: null,
+    quiet_hours: null,
+  }
+}
+
+export function emptyGroup(mode: Group['mode'] = 'all'): Group {
+  return { type: 'group', id: newId('g'), mode, children: [], enabled: true }
+}
+
+export function blankFilter(): FilterIn {
+  return {
+    name: '',
+    description: '',
+    enabled: true,
+    mode: 'live',
+    definition: { root: emptyGroup(), display_place_id: null, notify: defaultNotify() },
+  }
+}

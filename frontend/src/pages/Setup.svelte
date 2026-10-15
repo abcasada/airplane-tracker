@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { errorMessage, post } from '../lib/api'
+  import { errorMessage, get, post, put } from '../lib/api'
   import { refreshSession } from '../lib/session.svelte'
 
   let step = $state<'account' | 'totp' | 'codes'>('account')
@@ -59,6 +59,16 @@
 
   async function finish() {
     await refreshSession()
+    try {
+      // Time-of-day filters and quiet hours use this; default to the device's zone.
+      const alerting = await get<Record<string, unknown>>('/api/settings/alerting')
+      await put('/api/settings/alerting', {
+        ...alerting,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      })
+    } catch {
+      // Not critical: it can be set later in Settings.
+    }
     location.hash = '#/'
   }
 </script>

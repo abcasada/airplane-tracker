@@ -7,6 +7,7 @@ explanations and backtests all pick it up from this catalog.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -209,14 +210,29 @@ def _local_dt(f: LiveFacts) -> datetime:
     return datetime.fromtimestamp(f.ctx.now, f.ctx.tz)
 
 
+_COMPANY_SUFFIXES = re.compile(r"\b(INC|CO|CORP|CORPORATION|LLC|LTD|LIMITED|COMPANY|NA)\b")
+
+
+def _norm_name(name: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", _COMPANY_SUFFIXES.sub("", name.upper()))
+
+
 def _operator(f: LiveFacts) -> str | None:
     t = f.track
-    parts = [t.airline.name if t.airline else None, t.owner_op]
     pa = _pa(f)
-    if pa and pa.operator:
-        parts.append(pa.operator)
-    joined = " / ".join(dict.fromkeys(p for p in parts if p))
-    return joined or None
+    candidates = [t.airline.name if t.airline else None, t.owner_op, pa.operator if pa else None]
+    parts: list[str] = []
+    seen: list[str] = []
+    for name in candidates:
+        if not name:
+            continue
+        n = _norm_name(name)
+        # "Southwest Airlines" and "SOUTHWEST AIRLINES CO" are the same operator.
+        if any(n.startswith(s) or s.startswith(n) for s in seen):
+            continue
+        seen.append(n)
+        parts.append(name)
+    return " / ".join(parts) or None
 
 
 def _confirmed_squawk(f: LiveFacts) -> str | None:

@@ -177,3 +177,14 @@ def test_describe() -> None:
         "Military AND (Visible now (from Home) OR Inside area (Range)) "
         "AND Altitude (MSL) < 10000 ft"
     )
+
+
+def test_operator_merges_duplicate_names() -> None:
+    from app.enrich.models import Airline
+
+    f = make_facts(callsign="SWA1739", info={"owner_op": "SOUTHWEST AIRLINES CO"})
+    f.track.airline = Airline("SWA", "Southwest Airlines", None, None)
+    assert f.get("operator") == "Southwest Airlines"
+    g = make_facts(callsign="UAL1", info={"owner_op": "UMB BANK NA TRUSTEE"})
+    g.track.airline = Airline("UAL", "United Airlines", None, None)
+    assert g.get("operator") == "United Airlines / UMB BANK NA TRUSTEE"

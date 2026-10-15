@@ -2,7 +2,7 @@
 
 Personal ADS-B aircraft alert service. It polls free ADS-B aggregators around the user's active places, enriches and classifies aircraft (with a strong focus on military), computes generic facts (visibility, arrival score, area entry, predictions with confidence), and runs **user-built filters** over them. It pushes matches to Android through Home Assistant. It ships as **one lightweight Docker container** on a shared home server. The PWA web UI is exposed via a Cloudflare Tunnel behind built-in auth with TOTP 2FA. **The filter dashboard is the product.** The user spends their time fine-tuning filters there.
 
-**Status:** Phase 0 done (skeleton, auth with TOTP, setup, places, HA settings, Docker, CI). The full design, data-source research and phase order are in **`docs/PLAN.md`**; read it before starting any phase. Don't start a phase the user hasn't approved. When the design changes, update `docs/PLAN.md` in the same commit.
+**Status:** Phases 0–1 done: secure skeleton, ingest from adsb.fi/adsb.lol, enrichment datasets, military classifier, filter engine and dashboard (builder, live preview, funnel, why-not), alert episodes and Home Assistant notifications. The full design, data-source research and phase order are in **`docs/PLAN.md`**; read it before starting any phase. Don't start a phase the user hasn't approved. When the design changes, update `docs/PLAN.md` in the same commit.
 
 ## Stack (planned)
 

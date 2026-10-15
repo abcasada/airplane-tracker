@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { errorMessage, get, post, put } from '../lib/api'
+  import { del, errorMessage, get, post, put } from '../lib/api'
+  import { fmtTime } from '../lib/format'
   import { loggedOut, session } from '../lib/session.svelte'
   import { toast } from '../lib/toast.svelte'
 
@@ -19,6 +20,25 @@
   let testResult = $state<{ ok: boolean; message?: string; error?: string } | null>(null)
   let busy = $state(false)
 
+  interface Alerting {
+    episode_end_after_s: number
+    daily_ceiling: number
+    repeat_suppress_min: number | null
+    quiet_hours: { start: string; end: string } | null
+    timezone: string
+  }
+  interface Exclusion {
+    id: number
+    filter_id: number | null
+    kind: string
+    value: string
+    until: number | null
+    note: string
+  }
+  let alerting = $state<Alerting | null>(null)
+  let exclusions = $state<Exclusion[]>([])
+  const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone
+
   let pwCurrent = $state('')
   let pwNew = $state('')
   let newCodes = $state<string[]>([])
@@ -28,7 +48,24 @@
     haUrl = ha.url || 'http://host.docker.internal:8123'
     haService = ha.service
     if (haService) services = [haService]
+    alerting = await get<Alerting>('/api/settings/alerting')
+    exclusions = await get<Exclusion[]>('/api/exclusions')
   })
+
+  async function saveAlerting() {
+    if (!alerting) return
+    try {
+      alerting = await put<Alerting>('/api/settings/alerting', $state.snapshot(alerting))
+      toast('Alerting settings saved')
+    } catch (e) {
+      toast(errorMessage(e), 'error')
+    }
+  }
+
+  async function unmute(x: Exclusion) {
+    await del(`/api/exclusions/${x.id}`)
+    exclusions = exclusions.filter((e) => e.id !== x.id)
+  }
 
   async function saveHA() {
     busy = true
@@ -132,6 +169,7 @@
           </span>
         {/if}
       </div>
+
       <label class="field">
         Phone (notify service)
         <select bind:value={haService} onchange={saveHA} disabled={ha.from_env.service}>
@@ -141,6 +179,72 @@
       </label>
       <div><button onclick={testNotification} disabled={!haService}>Send test notification</button></div>
     {/if}
+  </section>
+
+  {#if alerting}
+    <section class="card stack">
+      <h2>Alerting</h2>
+      <div class="grid-2">
+        <label class="field">
+          Time zone <span class="hint">For time-of-day filters and quiet hours</span>
+          <input bind:value={alerting.timezone} />
+        </label>
+        <div class="field-btn">
+          {#if alerting.timezone !== deviceTz}
+            <button class="small" onclick={() => (alerting!.timezone = deviceTz)}>Use this device's ({deviceTz})</button>
+          {/if}
+        </div>
+        <label class="field">
+          An alert ends after the aircraft stops matching for (s)
+          <input type="number" min="10" max="3600" bind:value={alerting.episode_end_after_s} />
+        </label>
+        <label class="field">
+          Daily safety limit <span class="hint">Home Assistant allows 500 pushes/day per phone</span>
+          <input type="number" min="1" max="490" bind:value={alerting.daily_ceiling} />
+        </label>
+      </div>
+      <p class="muted small">Optional, for all filters (off by default):</p>
+      <div class="row">
+        <label class="check">
+          <input type="checkbox" checked={alerting.repeat_suppress_min !== null}
+            onchange={(e) => (alerting!.repeat_suppress_min = (e.currentTarget as HTMLInputElement).checked ? 60 : null)} />
+          Don't notify about the same aircraft again within
+        </label>
+        {#if alerting.repeat_suppress_min !== null}
+          <input type="number" class="num" min="1" bind:value={alerting.repeat_suppress_min} /> min
+        {/if}
+      </div>
+      <div class="row">
+        <label class="check">
+          <input type="checkbox" checked={alerting.quiet_hours !== null}
+            onchange={(e) => (alerting!.quiet_hours = (e.currentTarget as HTMLInputElement).checked ? { start: '22:00', end: '07:00' } : null)} />
+          Quiet hours (critical filters still notify)
+        </label>
+        {#if alerting.quiet_hours}
+          <input type="time" class="time" bind:value={alerting.quiet_hours.start} /> to
+          <input type="time" class="time" bind:value={alerting.quiet_hours.end} />
+        {/if}
+      </div>
+      <div><button class="primary" onclick={saveAlerting}>Save alerting settings</button></div>
+    </section>
+  {/if}
+
+  <section class="card stack">
+    <h2>Muted</h2>
+    {#each exclusions as x (x.id)}
+      <div class="row between mute">
+        <span>
+          <strong>{x.kind.replace('_', ' ')}</strong> {x.value}
+          <span class="muted small">
+            {x.filter_id ? `· filter #${x.filter_id}` : '· all filters'}
+            · {x.until ? `until ${fmtTime(x.until)}` : 'forever'} {x.note ? `· ${x.note}` : ''}
+          </span>
+        </span>
+        <button class="small" onclick={() => unmute(x)}>Unmute</button>
+      </div>
+    {:else}
+      <p class="muted small">Nothing muted. Use the mute buttons on an alert or aircraft.</p>
+    {/each}
   </section>
 
   <section class="card stack">
@@ -174,3 +278,20 @@
     {/if}
   </section>
 </div>
+
+<style>
+  .num {
+    width: 90px;
+  }
+  .time {
+    width: 120px;
+  }
+  .field-btn {
+    display: flex;
+    align-items: flex-end;
+  }
+  .mute {
+    border-bottom: 1px solid var(--border);
+    padding: 6px 0;
+  }
+</style>

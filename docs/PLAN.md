@@ -429,8 +429,8 @@ The design goal is that tuning "what reaches my phone" is fast, visual, safe to 
 
 A filter is a **JSON expression tree**: nested groups **ALL / ANY / NONE** of conditions `field op value`. Each filter also has:
 
-- **places**: which viewpoints/targets it applies to
-- **timing**: `now` / `predicted` / `both`, with lead window and minimum confidence
+- **places**: each place-related condition names its place ("Distance from Home < 10 nm", "Inside area Smoky Hill"), so one filter can combine several places. A *display place* sets the distance and direction used in notification text.
+- **timing**: predicted facts (Phase 3) are fields like any other (`predicted_visible`, ETA, confidence), so "now" vs "soon" is expressed with conditions
 - **notification settings**: channel, priority, template, optional suppression
 
 Global and per-filter **exclusions** (quick mutes) apply on top.
