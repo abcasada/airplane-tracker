@@ -188,3 +188,42 @@ def test_operator_merges_duplicate_names() -> None:
     g = make_facts(callsign="UAL1", info={"owner_op": "UMB BANK NA TRUSTEE"})
     g.track.airline = Airline("UAL", "United Airlines", None, None)
     assert g.get("operator") == "United Airlines / UMB BANK NA TRUSTEE"
+
+
+def test_schedule_active_field() -> None:
+    from app.places.models import Schedule
+
+    # NOW is Friday 02:00 in Chicago.
+    RANGE.schedule = Schedule(days=[0, 1, 2, 3, 4, 5], start="09:00", end="17:00",
+                              tz="America/Chicago")  # fmt: skip
+    try:
+        f = make_facts()
+        assert f.get("schedule_active", 2) is False
+        RANGE.schedule = Schedule(days=[4], start="22:00", end="06:00", tz="America/Chicago")
+        assert make_facts().get("schedule_active", 2) is True
+        assert make_facts().get("schedule_active", 1) is None  # home has no schedule
+    finally:
+        RANGE.schedule = None
+
+
+def test_any_active_viewpoint() -> None:
+    from app.filters.facts import display_place
+
+    trip = Place(id=5, name="Trip", lat=39.74, lon=-104.99, radius_nm=10, visibility=Visibility(),
+                 active_until=NOW + 3600, created_at=0, updated_at=0)  # fmt: skip
+    PLACES[5] = trip
+    try:
+        near_trip = make_facts(lat=39.75, lon=-104.99, alt_baro_ft=9000)
+        assert near_trip.get("visible_now", 0) is True
+        assert near_trip.get("distance_nm", 0) == pytest.approx(0.6, abs=0.1)
+        assert display_place(0, near_trip) is trip
+        assert flt(cond("visible_now", "is_true", place=0)).matches(near_trip)
+        trip.active_until = NOW - 1  # expired trips no longer count
+        assert make_facts(lat=39.75, lon=-104.99).get("visible_now", 0) is False
+        bad = flt(cond("inside_area", "is_true", place=0))
+        assert "any active viewpoint" in " ".join(bad.errors)
+        assert "any active viewpoint" in describe(
+            FilterDefinition(root=Group(children=[cond("visible_now", "is_true", place=0)])), PLACES
+        )
+    finally:
+        del PLACES[5]

@@ -46,6 +46,54 @@
     }
   }
 
+  let hereDays = $state('1')
+  let locating = $state(false)
+
+  function status(p: Place): string | null {
+    const now = Date.now() / 1000
+    if (p.active_until !== null && now > p.active_until) return 'expired'
+    if (p.active_from !== null && now < p.active_from) return 'upcoming'
+    if (p.active_until !== null) return `until ${new Date(p.active_until * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+    return null
+  }
+
+  function imHere() {
+    if (!navigator.geolocation) {
+      toast('This browser has no location access', 'error')
+      return
+    }
+    locating = true
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          const lat = +pos.coords.latitude.toFixed(5)
+          const lon = +pos.coords.longitude.toFixed(5)
+          const elev = await get<{ elevation_ft: number | null }>(`/api/places/elevation?lat=${lat}&lon=${lon}`).catch(() => ({ elevation_ft: null }))
+          const p = blankPlace('viewpoint')
+          const now = Date.now() / 1000
+          p.name = `Here · ${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+          p.lat = lat
+          p.lon = lon
+          p.elevation_ft = elev.elevation_ft ?? 0
+          p.source = 'geolocation'
+          p.active_until = now + Number(hereDays) * 86400
+          await post('/api/places', p)
+          toast(`Added a viewpoint here for ${hereDays} day(s)`)
+          await load()
+        } catch (e) {
+          toast(errorMessage(e), 'error')
+        } finally {
+          locating = false
+        }
+      },
+      (err) => {
+        locating = false
+        toast(`Location unavailable: ${err.message}`, 'error')
+      },
+      { enableHighAccuracy: true, timeout: 15000 },
+    )
+  }
+
   async function remove(p: Place) {
     if (!confirm(`Delete "${p.name}"? Filters that use it will stop matching it.`)) return
     try {
@@ -67,6 +115,21 @@
     happens near them is decided by your filters.
   </p>
 
+  {#if !editing}
+    <div class="card row here">
+      <div class="grow">
+        <strong>Traveling?</strong>
+        <span class="muted small">Add a temporary viewpoint at your phone's location.</span>
+      </div>
+      <select bind:value={hereDays} class="inline" aria-label="For how long">
+        <option value="1">for 1 day</option>
+        <option value="3">for 3 days</option>
+        <option value="7">for a week</option>
+      </select>
+      <button onclick={imHere} disabled={locating}>{locating ? 'Locating…' : "◎ I'm here now"}</button>
+    </div>
+  {/if}
+
   {#if editing}
     <div class="card">
       <h2>{editing.id === null ? 'New place' : 'Edit place'}</h2>
@@ -86,6 +149,8 @@
           <span class="badge">{roleLabel[p.role]}</span>
           {#if p.is_home}<span class="badge accent">Home</span>{/if}
           {#if !p.enabled}<span class="badge">Disabled</span>{/if}
+          {#if status(p)}<span class="badge" class:danger={status(p) === 'expired'}>{status(p)}</span>{/if}
+          {#if p.schedule}<span class="badge">{p.schedule.start}–{p.schedule.end}</span>{/if}
           {#if p.airport_icao}<span class="badge">{p.airport_icao}</span>{/if}
         </div>
         <div class="muted small">
@@ -100,3 +165,12 @@
     </div>
   {/each}
 </div>
+
+<style>
+  .here {
+    border-style: dashed;
+  }
+  .inline {
+    width: auto;
+  }
+</style>

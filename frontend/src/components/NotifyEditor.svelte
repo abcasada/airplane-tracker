@@ -41,6 +41,7 @@
         Distances and directions relative to
         <select bind:value={definition.display_place_id}>
           <option value={null}>— none —</option>
+          <option value={0}>Nearest active viewpoint</option>
           {#each catalog.places as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
         </select>
       </label>

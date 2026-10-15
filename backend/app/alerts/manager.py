@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from app.clock import Clock
 from app.db import Database
 from app.filters.engine import CompiledFilter
-from app.filters.facts import LiveFacts
+from app.filters.facts import LiveFacts, display_place
 from app.filters.models import FilterOut, QuietHours
 from app.notify.base import Notifier, NotifyError, OutgoingNotification
 from app.places.models import Place
@@ -131,7 +131,7 @@ class AlertManager:
         for m in matches:
             key = (m.filter.id, m.facts.hex)
             seen.add(key)
-            place = places.get(m.filter.definition.display_place_id or -1)
+            place = display_place(m.filter.definition.display_place_id, m.facts)
             dist = fmt.distance_for(m.facts, place)
             ep = self.episodes.get(key)
             if ep is None:
@@ -281,7 +281,7 @@ class AlertManager:
         sendable.sort(key=lambda x: -PRIORITY_RANK[x[0].filter.definition.notify.priority])
         lead, _ = sendable[0]
         n = lead.filter.definition.notify
-        place = places.get(lead.filter.definition.display_place_id or -1)
+        place = display_place(lead.filter.definition.display_place_id, lead.facts)
         names = [m.filter.name for m, _ in sendable]
         values = fmt.template_values(lead.facts, place, names)
         title = (
@@ -305,6 +305,7 @@ class AlertManager:
             image=image,
             click_url=f"{self.public_url}/#/aircraft/{hex_}" if self.public_url else None,
             military=bool(track.classification and track.classification.military),
+            alert_ids=tuple(a for _, a in sendable),
         )
         error: str | None = None
         notifier = await self.get_notifier()

@@ -32,6 +32,31 @@
     }
   })
 
+  const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+  function toLocalInput(epoch: number | null): string {
+    if (epoch === null) return ''
+    const d = new Date(epoch * 1000)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  }
+
+  function fromLocalInput(v: string): number | null {
+    return v ? new Date(v).getTime() / 1000 : null
+  }
+
+  function toggleSchedule(on: boolean) {
+    value.schedule = on
+      ? { days: [0, 1, 2, 3, 4, 5], start: '09:00', end: '17:00', tz: Intl.DateTimeFormat().resolvedOptions().timeZone }
+      : null
+  }
+
+  function toggleDay(i: number) {
+    if (!value.schedule) return
+    const days = value.schedule.days
+    value.schedule.days = days.includes(i) ? days.filter((d) => d !== i) : [...days, i].sort()
+  }
+
   function pick(lat: number, lon: number) {
     if (value.role === 'area') {
       polygonText = (polygonText.trim() ? polygonText.trim() + '\n' : '') + `${lat}, ${lon}`
@@ -259,6 +284,45 @@
     <label class="check"><input type="checkbox" bind:checked={value.is_home} /> This is my home</label>
   {/if}
 
+  <details open={value.active_from !== null || value.active_until !== null}>
+    <summary>Active dates <span class="muted small">(optional, e.g. a trip)</span></summary>
+    <div class="grid-2 inner">
+      <label class="field">
+        From
+        <input type="datetime-local" value={toLocalInput(value.active_from)}
+          onchange={(e) => (value.active_from = fromLocalInput((e.currentTarget as HTMLInputElement).value))} />
+      </label>
+      <label class="field">
+        Until
+        <input type="datetime-local" value={toLocalInput(value.active_until)}
+          onchange={(e) => (value.active_until = fromLocalInput((e.currentTarget as HTMLInputElement).value))} />
+      </label>
+    </div>
+  </details>
+
+  <details open={value.schedule !== null}>
+    <summary>Active hours <span class="muted small">(optional, e.g. a range's published hours)</span></summary>
+    <div class="stack inner">
+      <label class="check">
+        <input type="checkbox" checked={value.schedule !== null} onchange={(e) => toggleSchedule((e.currentTarget as HTMLInputElement).checked)} />
+        Use weekly active hours
+      </label>
+      {#if value.schedule}
+        <div class="row">
+          {#each DAYS as d, i (d)}
+            <button type="button" class="small" class:on={value.schedule.days.includes(i)} onclick={() => toggleDay(i)}>{d}</button>
+          {/each}
+        </div>
+        <div class="row">
+          <input type="time" class="time" bind:value={value.schedule.start} /> to
+          <input type="time" class="time" bind:value={value.schedule.end} />
+          <span class="muted small">{value.schedule.tz}</span>
+        </div>
+        <p class="muted small">Filters can test "Within the place's active hours". Nothing changes automatically.</p>
+      {/if}
+    </div>
+  </details>
+
   <label class="check"><input type="checkbox" bind:checked={value.enabled} /> Enabled</label>
 
   {#if error}<p class="error">{error}</p>{/if}
@@ -273,6 +337,21 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     padding: 12px;
+  }
+  details summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .inner {
+    padding-top: 8px;
+  }
+  .time {
+    width: 120px;
+  }
+  button.on {
+    background: var(--accent);
+    color: var(--accent-contrast);
+    border-color: var(--accent);
   }
   .airport {
     align-items: flex-end;

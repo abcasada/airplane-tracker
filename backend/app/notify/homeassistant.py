@@ -67,6 +67,7 @@ class HomeAssistantClient:
         await self._request("POST", f"/api/services/notify/{svc}", json=payload)
 
 
+ACTION_PREFIX = "ATRK_"
 _IMPORTANCE = {"low": "low", "normal": "default", "high": "high", "critical": "high"}
 
 
@@ -87,6 +88,17 @@ def ha_payload(n: OutgoingNotification) -> dict[str, Any]:
         data["image"] = n.image
     if n.click_url:
         data["clickAction"] = n.click_url
+    if n.actions:
+        # Handled by app.notify.ha_events via HA's mobile_app_notification_action event.
+        actions: list[dict[str, str]] = [
+            {"action": f"{ACTION_PREFIX}MUTE:{n.hex}", "title": "Mute 1 day"},
+        ]
+        if n.alert_ids:
+            ids = ",".join(str(i) for i in n.alert_ids)
+            actions.append({"action": f"{ACTION_PREFIX}DOWN:{ids}", "title": "Not useful"})
+        if n.click_url:
+            actions.append({"action": "URI", "title": "Open", "uri": n.click_url})
+        data["actions"] = actions
     return {"title": n.title, "message": n.message, "data": data}
 
 

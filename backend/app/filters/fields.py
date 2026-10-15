@@ -65,6 +65,12 @@ class FieldDef:
     place_roles: tuple[str, ...] = ()
     enum: tuple[tuple[str, str], ...] = ()  # (value, label)
     suggest: str | None = None  # autocomplete source for the builder
+    # How "any active viewpoint" combines per-viewpoint values; None = not supported.
+    aggregate: Literal["any", "min", "max"] | None = None
+
+    def __post_init__(self) -> None:
+        if self.place and self.aggregate is None and self.type in ("bool", "number"):
+            object.__setattr__(self, "aggregate", "any" if self.type == "bool" else "min")
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -76,6 +82,8 @@ class FieldDef:
             "help": self.help,
             "place": self.place,
             "place_roles": list(self.place_roles),
+            "any_viewpoint": self.aggregate is not None
+            and (not self.place_roles or "viewpoint" in self.place_roles),
             "ops": OPS_BY_TYPE[self.type],
             "enum": [{"value": v, "label": lbl} for v, lbl in self.enum],
             "suggest": self.suggest,
@@ -434,7 +442,8 @@ for fd in [
              place=True),
     FieldDef("elevation_angle_deg", "Elevation angle", PL, "number",
              "How high above the horizon it appears from the place (90° = overhead).",
-             _elevation_angle, unit="°", place=True, place_roles=("viewpoint",)),
+             _elevation_angle, unit="°", place=True, place_roles=("viewpoint",),
+             aggregate="max"),
     FieldDef("slant_range_nm", "Line-of-sight distance", PL, "number",
              "Straight-line distance from the place, including height.", _slant, unit="nm",
              place=True, place_roles=("viewpoint",)),
@@ -448,6 +457,11 @@ for fd in [
     FieldDef("angle_to_place_deg", "Heading off the place", PL, "number",
              "0° = flying straight at the place, 180° = straight away from it.",
              _angle_to_place, unit="°", place=True),
+    FieldDef("schedule_active", "Within the place's active hours", PL, "bool",
+             "True during the place's weekly active hours (set on the place, e.g. a range's "
+             "published hours). Unknown when the place has no active hours set.",
+             lambda f, p: p.schedule.is_active(f.ctx.now) if p and p.schedule else None,
+             place=True),
     FieldDef("arrival_score", "Arrival score", PL, "number",
              "0–1: how much it looks like it's arriving at this airport: heading for it or lined "
              "up with a runway, descending, a believable height for the distance, slowing down. "

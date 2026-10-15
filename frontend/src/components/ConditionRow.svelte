@@ -109,7 +109,8 @@
 
     {#if fd?.place}
       <select bind:value={cond.place} aria-label="Place" class="place-select">
-        {#if places.length === 0}<option value={null}>No suitable place yet</option>{/if}
+        {#if fd.any_viewpoint}<option value={0}>Any active viewpoint</option>{/if}
+        {#if places.length === 0 && !fd.any_viewpoint}<option value={null}>No suitable place yet</option>{/if}
         {#each places as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
       </select>
     {/if}

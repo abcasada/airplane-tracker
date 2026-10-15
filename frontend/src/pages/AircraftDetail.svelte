@@ -4,6 +4,7 @@
   import { errorMessage, get } from '../lib/api'
   import { catalog, loadCatalog } from '../lib/catalog.svelte'
   import { fmtAlt, fmtDuration } from '../lib/format'
+  import AircraftPhoto from '../components/AircraftPhoto.svelte'
   import LiveMap from '../components/LiveMap.svelte'
   import type { AircraftSummary, Place } from '../lib/types'
 
@@ -76,9 +77,7 @@
           {#if a.police}<span class="badge">POLICE</span>{/if}
         </div>
       </div>
-      {#if d.plane_alert?.images.length}
-        <img class="photo" src={d.plane_alert.images[0]} alt="" referrerpolicy="no-referrer" />
-      {/if}
+      <AircraftPhoto hex={a.hex} />
       <p>
         {a.type_desc || a.type_code || 'Unknown type'} · {a.registration ?? 'no registration'} ·
         <span class="mono">{a.hex}</span>
@@ -150,12 +149,6 @@
 <style>
   h1 {
     margin: 0;
-  }
-  .photo {
-    width: 100%;
-    max-height: 280px;
-    object-fit: cover;
-    border-radius: var(--radius-sm);
   }
   table.data th {
     width: 45%;

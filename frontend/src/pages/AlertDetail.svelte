@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import AircraftPhoto from '../components/AircraftPhoto.svelte'
   import ExplainTree from '../components/ExplainTree.svelte'
   import QuickActions from '../components/QuickActions.svelte'
   import { errorMessage, get } from '../lib/api'
@@ -38,7 +39,7 @@
         <h1 class="mono">{a.callsign || a.registration || a.hex}</h1>
         {#if a.military}<span class="badge mil">MILITARY</span>{/if}
       </div>
-      {#if a.photo_url}<img class="photo" src={a.photo_url} alt="" referrerpolicy="no-referrer" />{/if}
+      <AircraftPhoto hex={a.hex} />
       <p>{a.type_desc || a.type_code || 'Unknown type'} · {a.registration ?? ''} · <a href={`#/aircraft/${a.hex}`} class="mono">{a.hex}</a></p>
       <p class="small">
         Filter <a href={`#/filters/${a.filter_id}`}>{a.filter_name}</a>
@@ -102,12 +103,6 @@
 <style>
   h1 {
     margin: 0;
-  }
-  .photo {
-    width: 100%;
-    max-height: 260px;
-    object-fit: cover;
-    border-radius: var(--radius-sm);
   }
   .notif {
     background: var(--surface-2);

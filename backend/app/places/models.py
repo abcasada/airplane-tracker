@@ -1,4 +1,6 @@
+from datetime import datetime
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -20,7 +22,26 @@ class Schedule(BaseModel):
     days: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5, 6])  # Monday = 0
     start: str = Field("00:00", pattern=r"^\d{2}:\d{2}$")
     end: str = Field("24:00", pattern=r"^\d{2}:\d{2}$")
-    tz: str = "America/Chicago"
+    tz: str = "UTC"
+
+    def is_active(self, now: float) -> bool:
+        try:
+            zone = ZoneInfo(self.tz)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = ZoneInfo("UTC")
+        t = datetime.fromtimestamp(now, zone)
+        if t.weekday() not in self.days:
+            return False
+        minutes = t.hour * 60 + t.minute
+        start, end = _minutes(self.start), _minutes(self.end)
+        if start <= end:
+            return start <= minutes < end
+        return minutes >= start or minutes < end
+
+
+def _minutes(hhmm: str) -> int:
+    h, m = (int(x) for x in hhmm.split(":"))
+    return min(24 * 60, h * 60 + m)
 
 
 class PlaceIn(BaseModel):

@@ -5,8 +5,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
-from app import __version__
+from app import USER_AGENT, __version__
 from app.auth.deps import Ctx, CurrentUser
+from app.enrich.photos import planespotters_photo
 from app.filters.facts import LiveFacts
 from app.filters.fields import FIELDS
 from app.runtime import aircraft_summary
@@ -72,6 +73,19 @@ async def aircraft_detail(hex_: str, ctx: Ctx, _: CurrentUser) -> dict[str, Any]
     }
 
 
+@router.get("/photos/{hex_}")
+async def photo(hex_: str, ctx: Ctx, _: CurrentUser) -> dict[str, Any] | None:
+    hex_ = hex_.lower()[:10]
+    rt = ctx.rt()
+    track = rt.store.get(hex_)
+    info = track.info if track and track.info else await rt.enricher.lookup(hex_)
+    pa = info.plane_alert
+    if pa and pa.images:
+        return {"source": "plane-alert-db", "src": pa.images[0], "link": pa.link, "credit": None}
+    ua = f"{USER_AGENT.rstrip(')')}; +{ctx.settings.contact_url})"
+    return await planespotters_photo(ctx.db, ctx.http, ctx.clock, hex_, ua)
+
+
 @router.get("/status")
 async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
     rt = ctx.rt()
@@ -93,6 +107,13 @@ async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
         "last_eval_ms": round(rt.last_eval_ms, 1),
         "last_eval_at": rt.last_eval_at,
         "live_clients": rt.broker.clients,
+        "ha_events": {"connected": rt.ha_events.connected, "last_error": rt.ha_events.last_error},
+        "routes": {
+            "cached": len(rt.routes.routes),
+            "pending": len(rt.routes.pending),
+            "requests": rt.routes.requests,
+            "last_error": rt.routes.last_error,
+        },
         "background": ctx.settings.run_background,
     }
 

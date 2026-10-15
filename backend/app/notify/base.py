@@ -15,6 +15,8 @@ class OutgoingNotification:
     image: str | None = None
     click_url: str | None = None
     military: bool = False
+    alert_ids: tuple[int, ...] = ()
+    actions: bool = True
 
     @property
     def tag(self) -> str:

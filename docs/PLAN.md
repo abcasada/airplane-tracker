@@ -177,7 +177,7 @@ Not built until you ask. Any paid source must go through an app-enforced monthly
 | **Airport** | ICAO code; position, elevation and runways auto-filled from OurAirports | distance, `arrival_score` (generic, §6.2), `claimed_destination == this`, ETA |
 | **Area** | Polygon (draw, or paste coordinates; FAA airspace search later) or circle; optional altitude band and active schedule | `inside_now`, time inside, `predicted_entry` + ETA |
 
-Places carry no behavior of their own; filters decide what matters. Your starting set is entered in the app and stored in `/data`, not the repo:
+Places carry no behavior of their own; filters decide what matters. Place conditions can also target **any active viewpoint** (home, or a travel viewpoint while its dates are active), so one filter follows you on trips: yes/no fields are true if true for any viewpoint, distances take the nearest. Places can carry **active dates** (trips) and **weekly active hours** (e.g. a range's published hours, exposed as the "Within the place's active hours" field). Your starting set is entered in the app and stored in `/data`, not the repo:
 
 - **Home viewpoint**
 - **KSLN**: auto-filled
@@ -391,7 +391,7 @@ Notifications go to `notify.mobile_app_<phone>` via HA's REST API. Delivery work
 | `timeout` | Auto-dismiss after it has passed |
 | `clickAction` | Opens the PWA on that aircraft |
 | `actions` | "Mute this aircraft…", "Mute this type for this filter…", "Snooze filter 1 h", "👎 not interesting". Received via HA's WebSocket API (`mobile_app_notification_action`) and written as exclusions/feedback. |
-| `image` | Optional aircraft photo from plane-alert-db links (public URLs, no home data) |
+| `image` | Aircraft photo from plane-alert-db links (public URLs, no home data). Planespotters.net photos are shown only in the web UI, because their terms require a visible photographer credit and link next to the image, which a notification can't carry. |
 | `channel: alarm_stream` | Optional per filter: sounds even in Do Not Disturb |
 
 **Message content is a per-filter template** built from any fields. The default looks like:

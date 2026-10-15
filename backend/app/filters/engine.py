@@ -18,7 +18,7 @@ import regex
 
 from app.places.models import Place
 
-from .facts import Facts
+from .facts import ANY_VIEWPOINT, Facts
 from .fields import FIELDS, OPS_BY_TYPE, FieldDef
 from .models import Condition, FilterDefinition, Group
 
@@ -171,7 +171,10 @@ def _prepare(node: Condition | Group, places: dict[int, Place], errors: list[str
     if fd is None:
         errors.append(f"Unknown field '{node.field}'")
         return PreparedCond(node, _unknown_field(node.field), lambda _v: False)
-    if fd.place:
+    if fd.place and node.place == ANY_VIEWPOINT:
+        if fd.aggregate is None or (fd.place_roles and "viewpoint" not in fd.place_roles):
+            errors.append(f"'{fd.label}' can't use 'any active viewpoint'")
+    elif fd.place:
         place = places.get(node.place) if node.place is not None else None
         if place is None:
             errors.append(f"'{fd.label}' needs a place")
@@ -313,7 +316,8 @@ def describe_condition(c: Condition, places: dict[int, Place]) -> str:
     label = fd.label
     if fd.place:
         p = places.get(c.place) if c.place is not None else None
-        label = f"{label} ({'from ' if fd.key != 'inside_area' else ''}{p.name if p else '?'})"
+        where = "any active viewpoint" if c.place == ANY_VIEWPOINT else (p.name if p else "?")
+        label = f"{label} ({'from ' if fd.key != 'inside_area' else ''}{where})"
     unit = f" {fd.unit}" if fd.unit and fd.unit not in ("°", "h") else (fd.unit or "")
     if c.op == "is_true":
         text = label

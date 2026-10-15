@@ -84,6 +84,7 @@ export interface FieldDef {
   help: string
   place: boolean
   place_roles: PlaceRole[]
+  any_viewpoint: boolean
   ops: string[]
   enum: { value: string; label: string }[]
   suggest: string | null

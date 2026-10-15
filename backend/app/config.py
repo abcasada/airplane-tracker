@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     secret_key: str | None = None
     session_days: int = 30
     log_level: str = "INFO"
+    # Some APIs (planespotters.net) require a contact URL in the User-Agent.
+    contact_url: str = "https://github.com/abcasada/airplane-tracker"
     # Background services (pollers, dataset downloads). Tests turn this off.
     run_background: bool = True
 
