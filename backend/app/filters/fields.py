@@ -14,7 +14,9 @@ from datetime import datetime
 from typing import Any, Literal
 
 from app import geo
+from app.enrich.routes import RouteFit, fit_route
 from app.places.models import Place
+from app.predict.arrival import ArrivalInputs, arrival_score
 
 from .facts import LiveFacts
 
@@ -206,6 +208,59 @@ def _angle_to_place(f: LiveFacts, p: Place | None) -> float | None:
     return abs(geo.angle_diff(t.track_deg, to_place))
 
 
+def _route_fit(f: LiveFacts) -> RouteFit | None:
+    if "__route_fit" not in f._memo:
+        route = f.track.route
+        f._memo["__route_fit"] = fit_route(route, f.track.lat, f.track.lon) if route else None
+    fit: RouteFit | None = f._memo["__route_fit"]
+    return fit
+
+
+def _route_value(attr: str) -> Compute:
+    def compute(f: LiveFacts, _p: Place | None) -> Any:
+        fit = _route_fit(f)
+        return getattr(fit, attr) if fit else None
+
+    return compute
+
+
+def _airport_code(p: Place) -> str:
+    return (p.airport_icao or "").upper()
+
+
+def _destined_for(f: LiveFacts, p: Place | None) -> bool | None:
+    fit = _route_fit(f)
+    if p is None or fit is None:
+        return None
+    return fit.plausible and fit.destination == _airport_code(p)
+
+
+def _departed_from(f: LiveFacts, p: Place | None) -> bool | None:
+    fit = _route_fit(f)
+    if p is None or fit is None:
+        return None
+    return fit.plausible and fit.origin == _airport_code(p)
+
+
+def _arrival(f: LiveFacts, p: Place | None) -> tuple[float, str | None] | None:
+    t = f.track
+    if p is None or t.lat is None or t.lon is None:
+        return None
+    key = f"__arrival@{p.id}"
+    if key not in f._memo:
+        height = _height_above(f, p)
+        runways = f.ctx.extras.get("runways", {}).get(p.id, [])
+        if height is None:
+            f._memo[key] = (0.0, None)
+        else:
+            inputs = ArrivalInputs(
+                t.lat, t.lon, height, t.gs_kt, t.track_deg, t.vertical_rate_fpm, t.on_ground
+            )
+            f._memo[key] = arrival_score(inputs, p.lat, p.lon, runways)
+    result: tuple[float, str | None] = f._memo[key]
+    return result
+
+
 def _local_dt(f: LiveFacts) -> datetime:
     return datetime.fromtimestamp(f.ctx.now, f.ctx.tz)
 
@@ -258,7 +313,9 @@ def _flag(attr: str) -> Compute:
 
 # ---- catalog ------------------------------------------------------------------------------------
 
-ID, AC, CL, ST, PL, TM = "Identity", "Aircraft", "Classification", "State", "Place", "Time"
+ID, AC, CL, ST, PL, RT, TM = (
+    "Identity", "Aircraft", "Classification", "State", "Place", "Route", "Time"
+)  # fmt: skip
 
 for fd in [
     FieldDef("hex", "ICAO hex address", ID, "string",
@@ -391,6 +448,36 @@ for fd in [
     FieldDef("angle_to_place_deg", "Heading off the place", PL, "number",
              "0° = flying straight at the place, 180° = straight away from it.",
              _angle_to_place, unit="°", place=True),
+    FieldDef("arrival_score", "Arrival score", PL, "number",
+             "0–1: how much it looks like it's arriving at this airport: heading for it or lined "
+             "up with a runway, descending, a believable height for the distance, slowing down. "
+             "Works for any aircraft, with or without a known route.",
+             lambda f, p: (a[0] if (a := _arrival(f, p)) else None), place=True,
+             place_roles=("airport",)),
+    FieldDef("arrival_runway", "Lined up with runway", PL, "string",
+             "The runway it's lined up for, within 15 nm of the threshold (e.g. 35).",
+             lambda f, p: (a[1] if (a := _arrival(f, p)) else None), place=True,
+             place_roles=("airport",)),
+    FieldDef("destined_for", "Claimed destination is", PL, "bool",
+             "The route database says it's flying to this airport, and its position fits that "
+             "route. Only airline-style callsigns have routes; military and most private flights "
+             "don't.", _destined_for, place=True, place_roles=("airport",)),
+    FieldDef("departed_from", "Claimed origin is", PL, "bool",
+             "The route database says it came from this airport, and its position fits.",
+             _departed_from, place=True, place_roles=("airport",)),
+    FieldDef("route_known", "Route known", RT, "bool",
+             "A route database (adsb.im) knows this callsign's route.",
+             lambda f, _: f.track.route.known if f.track.route else None),
+    FieldDef("route_origin", "Claimed origin", RT, "string",
+             "ICAO code of the leg's departure airport, e.g. KDEN.", _route_value("origin")),
+    FieldDef("route_destination", "Claimed destination", RT, "string",
+             "ICAO code of the leg's arrival airport, e.g. KSLN.", _route_value("destination")),
+    FieldDef("route_plausible", "Route plausible", RT, "bool",
+             "The aircraft is actually near the claimed route. Callsign routes are often stale.",
+             _route_value("plausible")),
+    FieldDef("route_off_track_nm", "Distance off route", RT, "number",
+             "How far the aircraft is from the claimed route's leg.", _route_value("off_track_nm"),
+             unit="nm"),
     FieldDef("local_hour", "Time of day", TM, "number",
              "Local time as hours, e.g. 6.5 = 06:30. Use 'between' for a window.",
              lambda f, _: (d := _local_dt(f)).hour + d.minute / 60, unit="h"),

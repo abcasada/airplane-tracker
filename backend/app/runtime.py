@@ -17,6 +17,7 @@ from app.classify.military import ClassifierSettings, Inputs, classify
 from app.context import AppContext
 from app.enrich.datasets import DatasetManager
 from app.enrich.enricher import Enricher
+from app.enrich.routes import RouteService
 from app.filters.engine import CompiledFilter
 from app.filters.exclusions import Exclusion, ExclusionRepo, is_excluded
 from app.filters.facts import EvalContext, LiveFacts
@@ -37,6 +38,7 @@ from app.notify.base import Notifier
 from app.notify.homeassistant import HomeAssistantClient, HomeAssistantNotifier
 from app.places.models import Place
 from app.places.repo import PlaceRepo
+from app.predict.arrival import Runway, runways_for
 from app.sources import readsb
 from app.sources.base import SourceBatch
 from app.tracks.store import Track, TrackStore
@@ -58,6 +60,8 @@ class Runtime:
         self.datasets = DatasetManager(ctx.db, ctx.settings.data_dir, ctx.http, ctx.clock)
         self.recorder = Recorder(ctx.settings.data_dir / "recordings")
         self.broker = Broker()
+        self.routes = RouteService(ctx.db, ctx.http, ctx.clock)
+        self.runways: dict[int, list[Runway]] = {}
         self.coverage = Coverage()
         self.classifier = ClassifierSettings()
         self.overrides: dict[str, bool] = {}
@@ -93,9 +97,11 @@ class Runtime:
         await self.reload_classifier()
         await self.reload_filters()
         await self.enricher.reload()
+        await self.routes.load()
         await self.alerts.load()
         if self.ctx.settings.run_background:
             self._spawn(self.poller.run(), "poller")
+            self._spawn(self._route_loop(), "routes")
             self._spawn(self._maintenance(), "maintenance")
 
     async def _seed(self) -> None:
@@ -126,6 +132,16 @@ class Runtime:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
 
+    async def _route_loop(self) -> None:
+        while True:
+            try:
+                if await self.routes.flush():
+                    for t in self.store.values():
+                        t.route = self.routes.get(t.callsign)
+            except Exception:
+                log.exception("route lookup failed")
+            await asyncio.sleep(5)
+
     async def _maintenance(self) -> None:
         while True:
             try:
@@ -143,7 +159,21 @@ class Runtime:
     async def reload_places(self) -> None:
         self.places = await PlaceRepo(self.ctx.db, self.ctx.clock).all()
         self.coverage.load(await self.ctx.db.get_json("coverage", {}))
+        await self.load_runways()
         self._compile()
+
+    async def load_runways(self) -> None:
+        out: dict[int, list[Runway]] = {}
+        for p in self.places:
+            if p.role != "airport" or not p.airport_icao:
+                continue
+            rows = await self.ctx.db.fetchall(
+                "SELECT r.* FROM runways r JOIN airports a ON a.ident = r.airport_ident "
+                "WHERE a.ident = ? OR a.icao = ?",
+                (p.airport_icao, p.airport_icao),
+            )
+            out[p.id] = runways_for([dict(r) for r in rows])
+        self.runways = out
 
     async def reload_filters(self) -> None:
         self.filters = await FilterRepo(self.ctx.db, self.ctx.clock).all()
@@ -214,6 +244,7 @@ class Runtime:
     async def refresh_enrichment(self) -> None:
         """After a dataset import: reload lookups and re-enrich every tracked aircraft."""
         await self.enricher.reload()
+        await self.load_runways()
         for t in self.store.values():
             t.info = await self.enricher.lookup(t.hex)
             t.airline = self.enricher.airline_for(t.callsign)
@@ -235,6 +266,8 @@ class Runtime:
                 track.airline_callsign = track.callsign
             if is_new or callsign_changed or track.classification is None:
                 self.classify_track(track)
+            track.route = self.routes.get(track.callsign)
+            self.routes.want(track.callsign, track.lat, track.lon)
             home = self.home()
             if home is not None and track.has_position:
                 assert track.lat is not None and track.lon is not None
@@ -258,7 +291,9 @@ class Runtime:
 
     def eval_context(self, now: float | None = None) -> EvalContext:
         tz: ZoneInfo = self.alerts.tz
-        return EvalContext(now or self.ctx.clock.now(), self.places_by_id(), tz)
+        return EvalContext(
+            now or self.ctx.clock.now(), self.places_by_id(), tz, {"runways": self.runways}
+        )
 
     def facts_for_all(self, ctx: EvalContext) -> list[LiveFacts]:
         return [LiveFacts(t, ctx) for t in self.store.values()]

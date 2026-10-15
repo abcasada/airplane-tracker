@@ -2,6 +2,7 @@
   import { errorMessage, get } from '../lib/api'
   import { toast } from '../lib/toast.svelte'
   import { defaultVisibility, type PlaceIn } from '../lib/types'
+  import MapPicker from './MapPicker.svelte'
 
   let {
     value = $bindable(),
@@ -20,6 +21,63 @@
   )
   let locating = $state(false)
   let error = $state('')
+  let airportInfo = $state<string>('')
+  let lookingUp = $state(false)
+
+  const livePolygon = $derived.by(() => {
+    try {
+      return parsePolygon(polygonText)
+    } catch {
+      return null
+    }
+  })
+
+  function pick(lat: number, lon: number) {
+    if (value.role === 'area') {
+      polygonText = (polygonText.trim() ? polygonText.trim() + '\n' : '') + `${lat}, ${lon}`
+    } else {
+      value.lat = lat
+      value.lon = lon
+      value.source = 'manual'
+    }
+  }
+
+  function undoPoint() {
+    const lines = polygonText.trim().split('\n')
+    lines.pop()
+    polygonText = lines.join('\n')
+  }
+
+  async function lookupAirport() {
+    const code = (value.airport_icao ?? '').trim()
+    if (!code) return
+    lookingUp = true
+    try {
+      const a = await get<{
+        ident: string
+        icao: string | null
+        name: string
+        lat: number
+        lon: number
+        elevation_ft: number | null
+        municipality: string | null
+        runways: { le_ident: string; he_ident: string; length_ft: number | null }[]
+      }>(`/api/airports/${encodeURIComponent(code)}`)
+      value.airport_icao = a.icao ?? a.ident
+      value.lat = +a.lat.toFixed(5)
+      value.lon = +a.lon.toFixed(5)
+      value.elevation_ft = Math.round(a.elevation_ft ?? 0)
+      value.source = 'airport_lookup'
+      if (!value.name) value.name = a.icao ?? a.ident
+      const rw = a.runways.map((r) => `${r.le_ident}/${r.he_ident}${r.length_ft ? ` (${r.length_ft.toLocaleString()} ft)` : ''}`)
+      airportInfo = `${a.name}${a.municipality ? `, ${a.municipality}` : ''} · ${rw.length ? `runways ${rw.join(', ')}` : 'no runway data'}`
+    } catch (e) {
+      airportInfo = ''
+      toast(errorMessage(e), 'error')
+    } finally {
+      lookingUp = false
+    }
+  }
 
   function useMyLocation() {
     if (!navigator.geolocation) {
@@ -112,11 +170,23 @@
   </div>
 
   {#if value.role === 'airport'}
-    <label class="field">
-      ICAO code <span class="hint">e.g. KSLN</span>
-      <input bind:value={value.airport_icao} maxlength="8" />
-    </label>
+    <div class="row airport">
+      <label class="field grow">
+        Airport code <span class="hint">ICAO or IATA, e.g. KSLN or SLN</span>
+        <input bind:value={value.airport_icao} maxlength="8" onkeydown={(e) => e.key === 'Enter' && (e.preventDefault(), lookupAirport())} />
+      </label>
+      <button type="button" onclick={lookupAirport} disabled={lookingUp}>{lookingUp ? 'Looking up…' : 'Look up'}</button>
+    </div>
+    {#if airportInfo}<p class="small ok">{airportInfo}</p>{/if}
   {/if}
+
+  <div>
+    <MapPicker lat={value.lat} lon={value.lon} radiusNm={value.radius_nm} polygon={value.role === 'area' ? livePolygon : null} onpick={pick} />
+    <p class="muted small hint-line">
+      {value.role === 'area' ? 'Click the map to add corners in order, or paste coordinates below.' : 'Click the map to set the location.'}
+      {#if value.role === 'area' && polygonText.trim()}<button type="button" class="small ghost" onclick={undoPoint}>Undo last corner</button>{/if}
+    </p>
+  </div>
 
   {#if value.role === 'area'}
     <label class="field">
@@ -203,6 +273,12 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     padding: 12px;
+  }
+  .airport {
+    align-items: flex-end;
+  }
+  .hint-line {
+    margin: 4px 0 0;
   }
   legend {
     padding: 0 6px;

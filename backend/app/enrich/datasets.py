@@ -31,6 +31,11 @@ PLANE_ALERT_IMAGES = (
 )
 VRS_AIRLINES = "https://raw.githubusercontent.com/vradarserver/standing-data/main/airlines/schema-01/airlines.csv"
 
+OURAIRPORTS_AIRPORTS = "https://davidmegginson.github.io/ourairports-data/airports.csv"
+OURAIRPORTS_RUNWAYS = "https://davidmegginson.github.io/ourairports-data/runways.csv"
+# Seaplane bases and balloonports don't help with aircraft arrivals.
+AIRPORT_TYPES = {"large_airport", "medium_airport", "small_airport", "heliport", "closed"}
+
 Importer = Callable[[Path, sqlite3.Connection], int]
 
 
@@ -154,6 +159,66 @@ def import_airlines(path: Path, conn: sqlite3.Connection) -> int:
     return len(out)
 
 
+def _float(v: str | None) -> float | None:
+    try:
+        return float(v) if v not in (None, "") else None
+    except ValueError:
+        return None
+
+
+def import_airports(path: Path, conn: sqlite3.Connection) -> int:
+    out = []
+    with path.open(encoding="utf-8", errors="replace", newline="") as f:
+        for row in csv.DictReader(f):
+            kind = row.get("type") or ""
+            lat, lon = _float(row.get("latitude_deg")), _float(row.get("longitude_deg"))
+            if kind not in AIRPORT_TYPES or kind == "closed" or lat is None or lon is None:
+                continue
+            icao = _clean(row.get("icao_code")) or _clean(row.get("gps_code"))
+            out.append(
+                (
+                    row["ident"].strip().upper(),
+                    icao.upper() if icao else None,
+                    (_clean(row.get("iata_code")) or "").upper() or None,
+                    row.get("name") or row["ident"],
+                    kind,
+                    lat,
+                    lon,
+                    _float(row.get("elevation_ft")),
+                    _clean(row.get("municipality")),
+                    _clean(row.get("iso_country")),
+                )
+            )
+    conn.execute("DELETE FROM airports")
+    conn.executemany("INSERT OR REPLACE INTO airports VALUES (?,?,?,?,?,?,?,?,?,?)", out)
+    return len(out)
+
+
+def import_runways(path: Path, conn: sqlite3.Connection) -> int:
+    out = []
+    with path.open(encoding="utf-8", errors="replace", newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("closed") == "1":
+                continue
+            out.append(
+                (
+                    (row.get("airport_ident") or "").upper(),
+                    _clean(row.get("le_ident")),
+                    _clean(row.get("he_ident")),
+                    _float(row.get("length_ft")),
+                    _float(row.get("le_latitude_deg")),
+                    _float(row.get("le_longitude_deg")),
+                    _float(row.get("le_heading_degT")),
+                    _float(row.get("he_latitude_deg")),
+                    _float(row.get("he_longitude_deg")),
+                    _float(row.get("he_heading_degT")),
+                )
+            )
+    conn.execute("DELETE FROM runways")
+    conn.executemany("INSERT INTO runways VALUES (?,?,?,?,?,?,?,?,?,?)", out)
+    return len(out)
+
+
 @dataclass(frozen=True)
 class DatasetSpec:
     name: str
@@ -171,6 +236,8 @@ SPECS = [
         "plane-alert-images", PLANE_ALERT_IMAGES, "plane_images.csv", import_plane_alert_images
     ),
     DatasetSpec("vrs-airlines", VRS_AIRLINES, "airlines.csv", import_airlines, refresh_days=30),
+    DatasetSpec("ourairports-airports", OURAIRPORTS_AIRPORTS, "airports.csv", import_airports, 30),
+    DatasetSpec("ourairports-runways", OURAIRPORTS_RUNWAYS, "runways.csv", import_runways, 30),
 ]
 
 

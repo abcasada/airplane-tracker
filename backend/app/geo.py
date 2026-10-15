@@ -79,3 +79,18 @@ def point_in_polygon(lat: float, lon: float, polygon: Sequence[tuple[float, floa
 def angle_diff(a: float, b: float) -> float:
     """Smallest signed difference a - b in degrees, in [-180, 180)."""
     return (a - b + 180.0) % 360.0 - 180.0
+
+
+def cross_and_along_track_nm(
+    lat: float, lon: float, lat1: float, lon1: float, lat2: float, lon2: float
+) -> tuple[float, float]:
+    """Distance off the great circle from point 1 to point 2 (signed, nm), and how far along it."""
+    d13 = haversine_nm(lat1, lon1, lat, lon) / EARTH_RADIUS_NM
+    t13 = math.radians(bearing_deg(lat1, lon1, lat, lon))
+    t12 = math.radians(bearing_deg(lat1, lon1, lat2, lon2))
+    xt = math.asin(max(-1.0, min(1.0, math.sin(d13) * math.sin(t13 - t12))))
+    cos_xt = math.cos(xt)
+    at = math.acos(max(-1.0, min(1.0, math.cos(d13) / cos_xt))) if cos_xt else 0.0
+    if math.cos(t13 - t12) < 0:
+        at = -at
+    return xt * EARTH_RADIUS_NM, at * EARTH_RADIUS_NM

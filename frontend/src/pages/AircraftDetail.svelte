@@ -4,7 +4,8 @@
   import { errorMessage, get } from '../lib/api'
   import { catalog, loadCatalog } from '../lib/catalog.svelte'
   import { fmtAlt, fmtDuration } from '../lib/format'
-  import type { AircraftSummary } from '../lib/types'
+  import LiveMap from '../components/LiveMap.svelte'
+  import type { AircraftSummary, Place } from '../lib/types'
 
   let { hex }: { hex: string } = $props()
 
@@ -23,9 +24,11 @@
       images: string[]
     } | null
     first_seen: number
+    history: [number, number, number, number | null][]
   }
 
   let d = $state<Detail | null>(null)
+  let places = $state<Place[]>([])
   let error = $state('')
 
   async function load() {
@@ -39,6 +42,7 @@
 
   onMount(() => {
     loadCatalog()
+    get<Place[]>('/api/places').then((p) => (places = p))
     load()
     const t = setInterval(load, 10000)
     return () => clearInterval(t)
@@ -99,6 +103,12 @@
       {/if}
     </div>
 
+    {#if a.lat != null}
+      <div class="mini-map">
+        <LiveMap aircraft={[a]} {places} selected={a.hex} trail={d.history.map((p) => [p[1], p[2]] as [number, number])} />
+      </div>
+    {/if}
+
     <div class="card">
       <h2>Tune</h2>
       <QuickActions
@@ -152,6 +162,9 @@
     text-transform: none;
     letter-spacing: 0;
     font-size: 0.85rem;
+  }
+  .mini-map {
+    height: 260px;
   }
   .place {
     margin-top: 16px;

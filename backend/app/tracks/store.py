@@ -57,6 +57,7 @@ class Track:
     airline: Airline | None = None
     airline_callsign: str | None = None  # callsign the airline lookup was done for
     classification: Any = None  # app.classify.military.Classification
+    route: Any = None  # app.enrich.routes.Route
     extra: dict[str, Any] = field(default_factory=dict)
 
     # ---- effective values: aggregator fields first, local databases as fallback ----------------
