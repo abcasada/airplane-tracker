@@ -45,6 +45,7 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 - `filters/` — filter expression-tree schema (pydantic), field catalog, compiler to predicates, exclusions. **One engine** serves live alerting, the dashboard live preview/funnel/"why not?", and the backtest. Never fork the evaluation logic.
 - `alerts/` — episode state machine (`predicted → active → ended`), episode de-duplication, opt-in suppression, shadow mode, message templates.
 - `notify/` — `Notifier` interface; Home Assistant (primary), ntfy, web push.
+- `backup.py` — export/merge-restore of places, filters, mutes, settings and overrides (never credentials).
 - `api/` — REST + SSE. `replay/` — offline replay (`core`), prediction metrics vs the adsb-alarm baseline (`metrics`), the dashboard backtest (`backtest`) and the `python -m app.replay` CLI.
 
 ## Conventions

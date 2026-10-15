@@ -13,6 +13,7 @@ from app.api import (
     airspace,
     alerts,
     auth,
+    backup,
     fields,
     filters,
     live,
@@ -115,6 +116,7 @@ def create_app(cfg: Settings | None = None, clock: Clock | None = None) -> FastA
 
     for module in (
         auth, settings, places, airports, airspace, filters, fields, live, alerts, military,
+        backup,
     ):  # fmt: skip
         app.include_router(module.router)
 

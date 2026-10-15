@@ -75,6 +75,49 @@
     }
   }
 
+  let restoreFile = $state<{ name: string; data: Record<string, unknown[] | unknown> } | null>(null)
+  let restoreSettings = $state(true)
+  let restoring = $state(false)
+
+  async function pickBackup(e: Event) {
+    const input = e.currentTarget as HTMLInputElement
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file) return
+    try {
+      const data = JSON.parse(await file.text())
+      if (data?.format !== 'airplane-tracker-backup/1') throw new Error('Not an Airplane Tracker backup file')
+      restoreFile = { name: file.name, data }
+    } catch (err) {
+      toast(errorMessage(err), 'error')
+    }
+  }
+
+  function count(key: string): number {
+    const v = restoreFile?.data[key]
+    return Array.isArray(v) ? v.length : 0
+  }
+
+  async function doRestore() {
+    if (!restoreFile) return
+    restoring = true
+    try {
+      const r = await post<Record<string, number>>(`/api/backup/restore?settings=${restoreSettings}`, restoreFile.data)
+      toast(
+        `Restored ${r.places} places, ${r.filters} filters, ${r.exclusions} mutes, ${r.overrides} military overrides` +
+          (r.places_existing || r.filters_existing ? ` (${r.places_existing + r.filters_existing} already here, kept)` : ''),
+      )
+      restoreFile = null
+      alerting = await get<Alerting>('/api/settings/alerting')
+      prediction = await get<PredictionSettings>('/api/settings/prediction')
+      exclusions = await get<Exclusion[]>('/api/exclusions')
+    } catch (err) {
+      toast(errorMessage(err), 'error')
+    } finally {
+      restoring = false
+    }
+  }
+
   async function unmute(x: Exclusion) {
     await del(`/api/exclusions/${x.id}`)
     exclusions = exclusions.filter((e) => e.id !== x.id)
@@ -292,6 +335,38 @@
   </section>
 
   <section class="card stack">
+    <h2>Backup</h2>
+    <p class="muted small">
+      One file with your places, filters, mutes, settings and military overrides. It includes your home
+      location but never your password, 2FA or Home Assistant token. Keep it private.
+    </p>
+    <div class="row">
+      <a class="btn" href="/api/backup" download>Download backup</a>
+      <label class="btn">
+        Restore from file…
+        <input type="file" accept="application/json,.json" class="hidden-input" onchange={pickBackup} />
+      </label>
+    </div>
+    {#if restoreFile}
+      <div class="restore stack">
+        <p>
+          <strong>{restoreFile.name}</strong>: {count('places')} places, {count('filters')} filters,
+          {count('exclusions')} mutes, {count('military_overrides')} military overrides.
+        </p>
+        <p class="muted small">
+          Restoring adds what's missing. Places and filters that already exist (same name) are kept as they are,
+          and this install's home stays home.
+        </p>
+        <label class="check"><input type="checkbox" bind:checked={restoreSettings} /> Also restore alerting, prediction and classifier settings</label>
+        <div class="row">
+          <button class="primary" onclick={doRestore} disabled={restoring}>{restoring ? 'Restoring…' : 'Restore'}</button>
+          <button onclick={() => (restoreFile = null)}>Cancel</button>
+        </div>
+      </div>
+    {/if}
+  </section>
+
+  <section class="card stack">
     <h2>Account</h2>
     <p class="muted small">
       Signed in as <strong>{session.me?.username}</strong>. Recovery codes left:
@@ -324,6 +399,13 @@
 </div>
 
 <style>
+  .hidden-input {
+    display: none;
+  }
+  .restore {
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+  }
   .num {
     width: 90px;
   }

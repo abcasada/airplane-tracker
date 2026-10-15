@@ -577,7 +577,7 @@ Each phase ends usable, with tests passing and the container working. **The filt
 ### Phase 5 — Optional sources and extras
 - **FAA SWIM SCDS "filed flight plan" source** (JetTip-style "scheduled visitor" facts for civil flights), if wanted.
 - Paid plug-ins (FlightAware, FR24) if wanted, behind budget caps; OpenSky.
-- Web Push backup channel; GHCR image releases; backup/restore of places and filters.
+- Web Push backup channel; GHCR image releases; backup/restore of places and filters. *Backup/restore done:* Settings → Backup downloads one JSON file (places, filters, mutes, settings, military overrides; never credentials). Restore merges, remaps place ids inside filters and mutes, skips places and filters that already exist, and keeps this install's home.
 
 ---
 
