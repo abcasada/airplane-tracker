@@ -4,6 +4,8 @@ from typing import Any
 
 import httpx
 
+from .base import NotifyError, OutgoingNotification
+
 log = logging.getLogger(__name__)
 
 
@@ -63,3 +65,39 @@ class HomeAssistantClient:
         if not svc:
             raise HomeAssistantError("No notify service selected")
         await self._request("POST", f"/api/services/notify/{svc}", json=payload)
+
+
+_IMPORTANCE = {"low": "low", "normal": "default", "high": "high", "critical": "high"}
+
+
+def ha_payload(n: OutgoingNotification) -> dict[str, Any]:
+    """Payload for the HA companion app on Android (iOS ignores the Android-only keys)."""
+    data: dict[str, Any] = {
+        "tag": n.tag,
+        "group": "aircraft",
+        "channel": "alarm_stream" if n.alarm_stream else n.channel,
+        "importance": _IMPORTANCE[n.priority],
+        "priority": "high" if n.priority in ("high", "critical") else "normal",
+        "ttl": 0 if n.priority in ("high", "critical") else 3600,
+        "notification_icon": "mdi:airplane",
+    }
+    if n.military:
+        data["color"] = "#6b7a1e"
+    if n.image:
+        data["image"] = n.image
+    if n.click_url:
+        data["clickAction"] = n.click_url
+    return {"title": n.title, "message": n.message, "data": data}
+
+
+class HomeAssistantNotifier:
+    name = "homeassistant"
+
+    def __init__(self, client: HomeAssistantClient) -> None:
+        self.client = client
+
+    async def send(self, n: OutgoingNotification) -> None:
+        try:
+            await self.client.notify(ha_payload(n))
+        except HomeAssistantError as e:
+            raise NotifyError(str(e)) from e

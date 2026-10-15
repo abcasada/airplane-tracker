@@ -1,8 +1,10 @@
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
+from app.alerts.manager import AlertingSettings
 from app.auth.deps import Ctx, CurrentUser
 from app.context import AppContext
 from app.notify.homeassistant import HAConfig, HomeAssistantClient, HomeAssistantError
@@ -87,3 +89,22 @@ async def test_notification(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
     except HomeAssistantError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True}
+
+
+@router.get("/alerting")
+async def get_alerting(ctx: Ctx, _: CurrentUser) -> AlertingSettings:
+    return ctx.rt().alerts.settings
+
+
+@router.put("/alerting")
+async def put_alerting(body: AlertingSettings, ctx: Ctx, user: CurrentUser) -> AlertingSettings:
+    try:
+        ZoneInfo(body.timezone)
+    except (ZoneInfoNotFoundError, ValueError) as e:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Unknown time zone {body.timezone}"
+        ) from e
+    await ctx.db.set_json("alerting", body.model_dump())
+    await ctx.db.audit(ctx.clock.now(), user.username, "settings.alerting")
+    await ctx.rt().reload_alerting()
+    return ctx.rt().alerts.settings

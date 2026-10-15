@@ -16,7 +16,7 @@ async def _changed(ctx: Ctx) -> None:
 
 @router.get("")
 async def list_places(ctx: Ctx, _: CurrentUser) -> list[Place]:
-    return await PlaceRepo(ctx.db, ctx.clock).list()
+    return await PlaceRepo(ctx.db, ctx.clock).all()
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

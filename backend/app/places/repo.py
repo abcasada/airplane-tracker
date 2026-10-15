@@ -44,7 +44,7 @@ class PlaceRepo:
         self.db = db
         self.clock = clock
 
-    async def list(self) -> list[Place]:
+    async def all(self) -> list[Place]:
         rows = await self.db.fetchall("SELECT * FROM places ORDER BY is_home DESC, role, name")
         return [_from_row(r) for r in rows]
 
