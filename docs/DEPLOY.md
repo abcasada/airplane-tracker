@@ -15,17 +15,40 @@ The app runs as one container plus its own Cloudflare Tunnel container. Nothing 
 
 Optional: a free Cloudflare WAF rate-limiting rule on `/api/auth/*` adds a second layer against password guessing.
 
-## 2. Configure and start
+## 2. Get the code and start it
+
+You need Docker with the Compose plugin (`docker compose version` should work) and git.
+
+The repository is private until it goes public, so the server needs to authenticate to GitHub once. The simplest way is the GitHub CLI:
 
 ```bash
-git clone <this repo> airplane-tracker && cd airplane-tracker
-cp .env.example .env
-# edit .env: CF_TUNNEL_TOKEN and PUBLIC_URL at minimum
-docker compose up -d --build
-docker compose logs airplane-tracker | grep "setup token"
+# once: install gh (https://cli.github.com) and log in
+gh auth login            # GitHub.com → HTTPS → log in with a browser/code
+
+gh repo clone abcasada/airplane-tracker -- --branch claude/adsb-aircraft-alerts-vtpmaj
+cd airplane-tracker
 ```
 
-Open `https://adsb.<your-domain>`, enter the setup token from the log, and create your account. You'll scan a QR code with an authenticator app and save 10 recovery codes.
+(With an SSH key on your GitHub account instead: `git clone -b claude/adsb-aircraft-alerts-vtpmaj git@github.com:abcasada/airplane-tracker.git`.)
+
+Configure and start:
+
+```bash
+cp .env.example .env
+nano .env                # at least CF_TUNNEL_TOKEN and PUBLIC_URL (https://adsb.<your-domain>)
+docker compose up -d --build
+docker compose ps        # airplane-tracker should become "healthy" within ~30 s
+docker compose logs airplane-tracker | grep -i "setup token"
+```
+
+The first build takes a few minutes. On first start the app downloads its datasets (aircraft database, plane-alert-db, airports) in about a minute; the System page shows their status.
+
+Open `https://adsb.<your-domain>`, enter the setup token from the log (or the `SETUP_TOKEN` you put in `.env`), and create your account. You'll scan a QR code with an authenticator app and save 10 recovery codes. Then:
+
+1. **Places:** add your home (or "I'm here now" on your phone), KSLN, and the range (Find FAA airspace → R-3601).
+2. **Settings → Notifications (ntfy):** connect your ntfy server and send a test (see section 3).
+3. **Filters → + New filter:** start from a template, e.g. "Specific aircraft, anywhere" or "Military visible from where I am".
+4. **Live:** the map.
 
 Data lives in the `airplane-data` Docker volume (`/data` in the container): the SQLite database, downloaded aircraft datasets, recordings, and the generated `secret.key`. Back up that volume to keep your places, filters and history.
 
@@ -44,6 +67,7 @@ Open the site in Chrome on Android → menu → **Install app** (or **Add to Hom
 ## Updating
 
 ```bash
+cd airplane-tracker
 git pull
 docker compose up -d --build
 ```
