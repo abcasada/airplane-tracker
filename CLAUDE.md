@@ -37,6 +37,7 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 
 - `sources/` — pluggable sources behind the `Source` protocol: area (adsb.fi primary, adsb.lol failover), local receiver, schedule (FAA SWIM later). `sources/airspace.py` searches FAA special use airspace for area places. Paid sources are deferred plug-ins. They **only fetch and normalize**. Rate limiting, retries and circuit breaking live in `ingest/`.
 - `ingest/` — query planner (places → inner/outer query circles, merged), poller, token-bucket rate limiter, merge-by-hex, recorder.
+- `watch.py` — aircraft followed anywhere: filter conditions "registration/hex is/in …" become a watchlist the poller looks up wherever they fly.
 - `enrich/` — tar1090-db aircraft DB + military address ranges, plane-alert-db (ODbL), adsb.im routeset → VRS standing-data → adsbdb routes, OurAirports airports and runways. All lookups go through the SQLite `cache` table.
 - `classify/` — military/government/police classifier: weighted signals → score + human-readable reasons; user overrides always win.
 - `tracks/` — in-memory per-aircraft ring buffers and derived kinematics.
@@ -65,7 +66,7 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 
 ## Data-source etiquette (hard rules)
 
-- **Never pull global feeds.** Only point/radius queries from the planner, max 250 nm.
+- **Never pull global feeds.** Only point/radius queries from the planner (max 250 nm), and per-aircraft lookups by hex/registration for filters that follow specific aircraft (`watch.py`: one request per minute for up to 40 aircraft, registration lookups ≥5 min apart). Both share each source's budget and circuit breaker.
 - Stay at **≤50% of each source's published rate limit** (adsb.fi: 1 req/s ⇒ budget 0.5 req/s). adsb.lol has no published limit, so treat it the same way.
 - adsb.fi temporarily **IP-blocks after repeated 4xx**. Back off on any 4xx/429 (circuit breaker, exponential up to 5 min). Never hot-loop retries.
 - Send gzip `Accept-Encoding` and a descriptive `User-Agent` (`airplane-tracker/<version> (personal, non-commercial)`).

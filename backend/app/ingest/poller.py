@@ -3,10 +3,12 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 from app.clock import Clock
-from app.sources.base import AreaQuery, AreaSource, SourceBatch, SourceError
+from app.sources.base import AreaQuery, AreaSource, LookupSource, SourceBatch, SourceError
+from app.watch import MAX_HEXES_PER_REQUEST, WATCH_INTERVAL_S, Watchlist
 
 from .planner import QueryCircle
 from .ratelimit import CircuitBreaker, TokenBucket
@@ -19,6 +21,7 @@ IDLE_INTERVAL_S = 60.0
 IDLE_AFTER_EMPTY_POLLS = 3
 
 BatchHandler = Callable[[SourceBatch, QueryCircle], Awaitable[None]]
+WATCH_CIRCLE = QueryCircle("watch", 0.0, 0.0, 0.0, WATCH_INTERVAL_S, "watch")
 
 
 @dataclass
@@ -40,6 +43,14 @@ class SourceSlot:
         self.requests_today += 1
 
 
+async def _fetch_hexes(hexes: list[str], src: LookupSource) -> SourceBatch:
+    return await src.fetch_hexes(hexes)
+
+
+async def _fetch_registration(registration: str, src: LookupSource) -> SourceBatch:
+    return await src.fetch_registration(registration)
+
+
 class Poller:
     def __init__(
         self,
@@ -47,6 +58,7 @@ class Poller:
         clock: Clock,
         circles: Callable[[], list[QueryCircle]],
         on_batch: BatchHandler,
+        watch: Watchlist | None = None,
     ) -> None:
         self.slots = [
             SourceSlot(s, TokenBucket(s.max_rate_per_s * BUDGET_FRACTION)) for s in sources
@@ -57,6 +69,7 @@ class Poller:
         self.next_due: dict[str, float] = {}
         self.empty_streak: dict[str, int] = {}
         self.last_circles: list[QueryCircle] = []
+        self.watch = watch
 
     def _interval(self, c: QueryCircle) -> float:
         if self.empty_streak.get(c.key, 0) >= IDLE_AFTER_EMPTY_POLLS:
@@ -65,7 +78,15 @@ class Poller:
 
     async def fetch(self, circle: QueryCircle) -> SourceBatch | None:
         query = AreaQuery(circle.lat, circle.lon, circle.radius_nm)
+        return await self._call(lambda src: src.fetch(query))
+
+    async def _call(
+        self, call: Callable[[Any], Awaitable[SourceBatch]], lookup: bool = False
+    ) -> SourceBatch | None:
+        """Try sources in order; each request spends that source's budget."""
         for slot in self.slots:
+            if lookup and not isinstance(slot.source, LookupSource):
+                continue
             now = self.clock.now()
             if slot.breaker.is_open(now):
                 continue
@@ -74,7 +95,7 @@ class Poller:
             slot.count(now)
             started = time.perf_counter()
             try:
-                batch = await slot.source.fetch(query)
+                batch = await call(slot.source)
             except SourceError as e:
                 slot.errors += 1
                 slot.breaker.failure(self.clock.now(), str(e), e.is_client_error)
@@ -110,9 +131,48 @@ class Poller:
                 await self.on_batch(batch, c)
             except Exception:
                 log.exception("batch handler failed")
-        if not self.next_due:
+        await self.watch_tick()
+        due = list(self.next_due.values())
+        if self.watch is not None:
+            due.append(self.watch.next_due)
+        if not due:
             return 5.0
-        return max(0.0, min(self.next_due.values()) - self.clock.now())
+        return max(0.0, min(due) - self.clock.now())
+
+    async def watch_tick(self) -> None:
+        """Look up followed aircraft wherever they are: one request per 40 hexes each minute,
+        plus an occasional lookup for a registration the database doesn't know."""
+        w = self.watch
+        if w is None:
+            return
+        batches: list[SourceBatch] = []
+        now = self.clock.now()
+        if now >= w.next_due:
+            hexes = w.hexes()
+            for i in range(0, len(hexes), MAX_HEXES_PER_REQUEST):
+                chunk = hexes[i : i + MAX_HEXES_PER_REQUEST]
+                batch = await self._call(partial(_fetch_hexes, chunk), lookup=True)
+                if batch is None:
+                    w.next_due = self.clock.now() + 5.0  # out of budget or all sources down
+                    break
+                batches.append(batch)
+            else:
+                w.next_due = now + WATCH_INTERVAL_S
+                w.last_run = now
+                w.last_found = sum(len(b.observations) for b in batches)
+        reg = w.due_registration(self.clock.now())
+        if reg is not None:
+            batch = await self._call(partial(_fetch_registration, reg), lookup=True)
+            if batch is not None:  # otherwise retried on a later tick
+                w.looked_up(reg, self.clock.now())
+                batches.append(batch)
+        for batch in batches:
+            for o in batch.observations:
+                w.learn(o.hex, o.registration, batch.fetched_at)
+            try:
+                await self.on_batch(batch, WATCH_CIRCLE)
+            except Exception:
+                log.exception("batch handler failed")
 
     async def run(self) -> None:
         while True:

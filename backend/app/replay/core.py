@@ -34,10 +34,13 @@ class Replay:
     tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("UTC"))
     store: TrackStore = field(default_factory=TrackStore)
     history: SightingsBook | None = None  # read-only: counts only days before the replayed one
+    extras: dict[str, Any] = field(default_factory=dict)  # e.g. the airport index
 
     def __post_init__(self) -> None:
         self._by_id = {p.id: p for p in self.places}
-        self._extras: dict[str, Any] = {"runways": self.runways, "sightings": self.history}
+        self._extras: dict[str, Any] = {
+            **self.extras, "runways": self.runways, "sightings": self.history,
+        }  # fmt: skip
 
     async def step(self, fetched_at: float, observations: list[Observation]) -> Cycle:
         for obs in observations:

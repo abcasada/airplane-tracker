@@ -82,6 +82,7 @@
   <div class="entry">
     <input
       bind:value={text}
+      aria-label="Values"
       oninput={onInput}
       onkeydown={onKey}
       onfocus={() => suggest && onInput()}

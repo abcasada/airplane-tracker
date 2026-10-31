@@ -53,6 +53,30 @@
     }
   }
 
+  async function followAnywhere() {
+    const field = registration ? 'registration' : 'hex'
+    const value = registration ?? hex
+    try {
+      const f = await post<{ id: number }>('/api/filters', {
+        name: `Follow ${value}`,
+        description: 'Notifies when this aircraft shows up, anywhere.',
+        enabled: true,
+        mode: 'live',
+        definition: {
+          root: { type: 'group', id: newId('g'), mode: 'all', enabled: true, children: [
+            { type: 'cond', id: newId('c'), field, op: 'in', value: [value], place: null, enabled: true },
+          ] },
+          display_place_id: null,
+        },
+        note: 'Created from aircraft page',
+      })
+      toast(`Following ${value} anywhere`)
+      navigate(`/filters/${f.id}`)
+    } catch (e) {
+      toast(errorMessage(e), 'error')
+    }
+  }
+
   function newFilterFromAircraft() {
     const f = blankFilter()
     f.name = `Watch ${typeCode ?? registration ?? hex}`
@@ -93,6 +117,7 @@
     {:else}
       <button class="small" onclick={() => override(true)}>Is military</button>
     {/if}
+    <button class="small primary" onclick={followAnywhere}>Follow anywhere</button>
     <button class="small" onclick={newFilterFromAircraft}>New filter from this aircraft</button>
   </div>
 </div>

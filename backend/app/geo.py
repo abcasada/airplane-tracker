@@ -94,3 +94,11 @@ def cross_and_along_track_nm(
     if math.cos(t13 - t12) < 0:
         at = -at
     return xt * EARTH_RADIUS_NM, at * EARTH_RADIUS_NM
+
+
+_COMPASS16 = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+              "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]  # fmt: skip
+
+
+def compass16(deg: float) -> str:
+    return _COMPASS16[round((deg % 360) / 22.5) % 16]

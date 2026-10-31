@@ -1,7 +1,9 @@
 """Parser for readsb-style JSON ("ac" list), used by adsb.fi, adsb.lol and local receivers."""
 
 import math
+import re
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -10,6 +12,8 @@ from app.clock import Clock
 from .base import AreaQuery, Observation, PosSource, SourceBatch, SourceError
 
 MAX_POSITION_AGE_S = 60.0
+_HEX = re.compile(r"^~?[0-9a-f]{6}$")
+_REG = re.compile(r"^[A-Z0-9][A-Z0-9\-]{0,11}$")
 
 
 def _num(v: Any) -> float | None:
@@ -101,7 +105,8 @@ def parse_payload(payload: Any, source: str, fallback_now: float) -> SourceBatch
 
 
 class ReadsbHttpSource:
-    """An aggregator that serves readsb JSON for a point/radius query."""
+    """An aggregator that serves readsb JSON for a point/radius query, and optionally lookups of
+    specific aircraft by hex (comma-separated) or registration."""
 
     def __init__(
         self,
@@ -110,23 +115,25 @@ class ReadsbHttpSource:
         http: httpx.AsyncClient,
         clock: Clock,
         max_rate_per_s: float,
+        hex_url_template: str | None = None,
+        reg_url_template: str | None = None,
     ) -> None:
         self.name = name
         self.url_template = url_template
         self.http = http
         self.clock = clock
         self.max_rate_per_s = max_rate_per_s
+        self.hex_url_template = hex_url_template
+        self.reg_url_template = reg_url_template
 
     def url(self, q: AreaQuery) -> str:
         return self.url_template.format(
             lat=round(q.lat, 4), lon=round(q.lon, 4), nm=max(1, min(250, math.ceil(q.radius_nm)))
         )
 
-    async def fetch(self, query: AreaQuery) -> SourceBatch:
+    async def _get(self, url: str) -> SourceBatch:
         try:
-            resp = await self.http.get(
-                self.url(query), headers={"Accept-Encoding": "gzip"}, timeout=15
-            )
+            resp = await self.http.get(url, headers={"Accept-Encoding": "gzip"}, timeout=15)
         except httpx.HTTPError as e:
             raise SourceError(f"{self.name}: {type(e).__name__}: {e}") from e
         if resp.status_code != 200:
@@ -137,6 +144,23 @@ class ReadsbHttpSource:
             raise SourceError(f"{self.name}: invalid JSON") from e
         return parse_payload(payload, self.name, self.clock.now())
 
+    async def fetch(self, query: AreaQuery) -> SourceBatch:
+        return await self._get(self.url(query))
+
+    async def fetch_hexes(self, hexes: list[str]) -> SourceBatch:
+        if self.hex_url_template is None:
+            raise SourceError(f"{self.name}: no hex lookup")
+        clean = [h.lower() for h in hexes if _HEX.match(h.lower())]
+        if not clean:
+            return SourceBatch(self.name, self.clock.now())
+        return await self._get(self.hex_url_template.format(hexes=",".join(clean)))
+
+    async def fetch_registration(self, registration: str) -> SourceBatch:
+        reg = registration.strip().upper()
+        if self.reg_url_template is None or not _REG.match(reg):
+            raise SourceError(f"{self.name}: no registration lookup for {registration!r}")
+        return await self._get(self.reg_url_template.format(reg=quote(reg, safe="")))
+
 
 def adsbfi(http: httpx.AsyncClient, clock: Clock) -> ReadsbHttpSource:
     return ReadsbHttpSource(
@@ -145,6 +169,8 @@ def adsbfi(http: httpx.AsyncClient, clock: Clock) -> ReadsbHttpSource:
         http,
         clock,
         max_rate_per_s=1.0,
+        hex_url_template="https://opendata.adsb.fi/api/v2/hex/{hexes}",
+        reg_url_template="https://opendata.adsb.fi/api/v2/registration/{reg}",
     )
 
 
@@ -156,4 +182,6 @@ def adsblol(http: httpx.AsyncClient, clock: Clock) -> ReadsbHttpSource:
         http,
         clock,
         max_rate_per_s=1.0,
+        hex_url_template="https://api.adsb.lol/v2/hex/{hexes}",
+        reg_url_template="https://api.adsb.lol/v2/reg/{reg}",
     )

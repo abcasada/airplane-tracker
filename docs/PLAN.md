@@ -503,6 +503,17 @@ Preview and backtest therefore always agree with what would actually notify.
 
 **Operators:** `=`, `≠`, `in list`, `glob`, `regex` (validated), `<`, `≤`, `between`, `exists`, `is true/false`.
 
+### 10.1a Following specific aircraft anywhere (built 2026-10-31)
+
+Any enabled filter condition **"registration is / is any of …"** or **"hex is / is any of …"** (not inside a "none of" group) puts those aircraft on a **watchlist**. The poller looks them up wherever they are, using the aggregators' per-aircraft endpoints (`/v2/hex/{a,b,…}` on adsb.fi with adsb.lol as failover): one request per minute covers up to 40 aircraft, sharing the same budget and circuit breaker as area polls. Registrations resolve to hex through tar1090-db; unknown ones are looked up by registration every 5 minutes until found.
+
+- Such a filter needs no place condition: it alerts once per appearance (episode), anywhere the community feeds see it. A new appearance after it's been gone a few minutes is a new alert.
+- New generic facts: `nearest_airport`, `nearest_airport_nm` and `near_description` ("26 nm SW of Dover AFB (KDOV)", "at …" within 3 nm), from the large/medium airports in OurAirports. More than 100 nm from the display place, the default title says where it is instead of a distance from home.
+- UI: a "Specific aircraft, anywhere" template, registration autocomplete from the aircraft database, a "Following anywhere" panel in the editor (flying or not, where), and "Follow anywhere" on any aircraft page.
+- **Limits:** only while the aircraft transmits and is within some feeder's range (not over oceans); aircraft with ADS-B off, and those using rotating privacy addresses (FAA PIA), can't be followed. Military aircraft often fly with ADS-B off. FR24 (planned) could fill gaps for civil aircraft.
+
+**Later (proposed): an FR24-style "simple mode"** for the builder: a flat panel of the common filters (registration, callsign, type, airline/operator, altitude and speed ranges, origin/destination, category, military), each a single row, compiling to the same expression tree. The full builder stays for complex filters.
+
 ### 10.2 Builder and live preview
 - **Visual builder:** add/remove/reorder conditions, nest groups, toggle a condition off without deleting it.
   - Value pickers with autocomplete: type codes with descriptions, operators seen recently, plane-alert categories, places.

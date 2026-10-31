@@ -57,6 +57,31 @@ async def suggest(
             (like, like, term, SUGGEST_LIMIT),
         )
         return [{"value": r["icao"], "label": r["name"]} for r in rows]
+    if source == "registration" and len(term) >= 2:
+        # Prefix range keeps the reg index usable on ~600k rows.
+        rows = await ctx.db.fetchall(
+            "SELECT a.reg, a.icao, a.type_code, t.descr FROM aircraft_db a "
+            "LEFT JOIN type_stats t ON t.type_code = a.type_code "
+            "WHERE a.reg >= ? AND a.reg < ? ORDER BY a.reg LIMIT ?",
+            (term, term + "\uffff", SUGGEST_LIMIT),
+        )
+        return [
+            {"value": r["reg"],
+             "label": " · ".join(x for x in (r["type_code"], r["descr"], r["icao"]) if x)}
+            for r in rows
+        ]  # fmt: skip
+    if source == "airports" and term:
+        rows = await ctx.db.fetchall(
+            "SELECT coalesce(icao, ident) AS code, name, municipality FROM airports "
+            "WHERE type IN ('large_airport', 'medium_airport') AND (icao = ? OR ident = ? "
+            "OR upper(name) LIKE ? OR upper(municipality) LIKE ?) LIMIT ?",
+            (term, term, like, like, SUGGEST_LIMIT),
+        )
+        return [
+            {"value": r["code"],
+             "label": ", ".join(x for x in (r["name"], r["municipality"]) if x)}
+            for r in rows
+        ]  # fmt: skip
     if source in ("callsign", "operator"):
         seen: dict[str, str] = {}
         ectx = rt.eval_context()

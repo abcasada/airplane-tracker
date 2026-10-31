@@ -18,6 +18,7 @@ from app.classify.size import SIZE_CLASSES, size_for
 from app.enrich.routes import RouteFit, fit_route
 from app.history import day_of
 from app.places.models import Place
+from app.places.nearby import NearAirport
 from app.predict.arrival import ArrivalInputs, arrival_score
 from app.predict.engine import is_active, prediction_for
 from app.sun import CIVIL_DARK_DEG, SUNRISE_DEG, sun_elevation_deg
@@ -338,6 +339,17 @@ def _sun(f: LiveFacts, p: Place | None) -> float | None:
     return memo[p.id]
 
 
+def _near(f: LiveFacts) -> NearAirport | None:
+    t = f.track
+    index = f.ctx.extras.get("airports")
+    if index is None or t.lat is None or t.lon is None:
+        return None
+    if "_near" not in f._memo:
+        f._memo["_near"] = index.nearest(t.lat, t.lon)
+    near: NearAirport | None = f._memo["_near"]
+    return near
+
+
 def _history(method: str) -> Compute:
     def compute(f: LiveFacts, p: Place | None) -> Any:
         book = f.ctx.extras.get("sightings")
@@ -360,10 +372,12 @@ ID, AC, CL, ST, PL, PR, RT, HI, TM = (
 
 for fd in [
     FieldDef("hex", "ICAO hex address", ID, "string",
-             "The transponder's 24-bit address, e.g. ae1234.", lambda f, _: f.track.hex),
+             "The transponder's 24-bit address, e.g. ae1234. Filters with 'hex is/in' follow "
+             "those aircraft anywhere.", lambda f, _: f.track.hex),
     FieldDef("registration", "Registration", ID, "string",
-             "Tail number or military serial, e.g. N12345 or 98-0001.",
-             lambda f, _: f.track.registration),
+             "Tail number or military serial, e.g. N12345 or 98-0001. Filters with "
+             "'registration is/in' follow those aircraft anywhere, not just near your places.",
+             lambda f, _: f.track.registration, suggest="registration"),
     FieldDef("callsign", "Callsign", ID, "string",
              "Flight callsign as broadcast, e.g. UAL1816 or RCH452.",
              lambda f, _: f.track.callsign, suggest="callsign"),
@@ -490,6 +504,17 @@ for fd in [
     FieldDef("angle_to_place_deg", "Heading off the place", PL, "number",
              "0° = flying straight at the place, 180° = straight away from it.",
              _angle_to_place, unit="°", place=True),
+    FieldDef("nearest_airport", "Nearest airport", PL, "string",
+             "Code of the nearest large or medium airport to the aircraft, wherever it is "
+             "(e.g. KDOV). Useful for aircraft followed outside your places.",
+             lambda f, _: n.code if (n := _near(f)) else None, suggest="airports"),
+    FieldDef("nearest_airport_nm", "Distance to nearest airport", PL, "number",
+             "Ground distance from the aircraft to the nearest large or medium airport.",
+             lambda f, _: round(n.distance_nm, 1) if (n := _near(f)) else None, unit="nm"),
+    FieldDef("near_description", "Where it is", PL, "string",
+             "Plain-English location from the nearest airport, e.g. '12 nm SW of Dover AFB "
+             "(KDOV)', or 'at …' within 3 nm. Used in notification text.",
+             lambda f, _: n.describe() if (n := _near(f)) else None),
     FieldDef("schedule_active", "Within the place's active hours", PL, "bool",
              "True during the place's weekly active hours (set on the place, e.g. a range's "
              "published hours). Unknown when the place has no active hours set.",

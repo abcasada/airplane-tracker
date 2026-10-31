@@ -39,6 +39,7 @@ from app.notify.base import Notifier
 from app.notify.ha_events import MUTE_SECONDS, HAEventListener
 from app.notify.homeassistant import HAConfig, HomeAssistantClient, HomeAssistantNotifier
 from app.places.models import Place
+from app.places.nearby import AirportIndex
 from app.places.repo import PlaceRepo
 from app.predict.arrival import Runway, runways_for
 from app.predict.engine import PredictionSettings, PredictionState, Predictor
@@ -46,6 +47,7 @@ from app.replay.backtest import Backtester
 from app.sources import readsb
 from app.sources.base import SourceBatch
 from app.tracks.store import Track, TrackStore
+from app.watch import Watchlist
 
 from .coverage import Coverage
 
@@ -84,11 +86,14 @@ class Runtime:
         self.backtester = Backtester(self)
         self.sightings = SightingsBook(ctx.db)
         self.planner_cfg = PlannerConfig(outer_enabled=True)
+        self.watch = Watchlist(ctx.db)
+        self.airport_index = AirportIndex()
         self.poller = Poller(
             [readsb.adsbfi(ctx.http, ctx.clock), readsb.adsblol(ctx.http, ctx.clock)],
             ctx.clock,
             self.circles,
             self.on_batch,
+            watch=self.watch,
         )
         self.matches: dict[str, list[int]] = {}  # hex → matching filter ids (last cycle)
         self.last_eval_ms = 0.0
@@ -107,6 +112,8 @@ class Runtime:
         await self.reload_filters()
         await self.enricher.reload()
         await self.routes.load()
+        await self.airport_index.load(self.ctx.db)
+        await self.watch.refresh(self.filters)
         await self.alerts.load()
         if self.ctx.settings.run_background:
             self._spawn(self.poller.run(), "poller")
@@ -197,6 +204,7 @@ class Runtime:
         self.filters = await FilterRepo(self.ctx.db, self.ctx.clock).all()
         self.exclusions = await ExclusionRepo(self.ctx.db, self.ctx.clock).all()
         self._compile()
+        await self.watch.refresh(self.filters)
 
     async def reload_prediction(self) -> None:
         s = PredictionSettings.model_validate(await self.ctx.db.get_json("prediction", {}))
@@ -291,6 +299,8 @@ class Runtime:
         """After a dataset import: reload lookups and re-enrich every tracked aircraft."""
         await self.enricher.reload()
         await self.load_runways()
+        await self.airport_index.load(self.ctx.db)
+        await self.watch.refresh(self.filters)  # registrations may resolve now
         for t in self.store.values():
             t.info = await self.enricher.lookup(t.hex)
             t.airline = self.enricher.airline_for(t.callsign)
@@ -341,7 +351,9 @@ class Runtime:
 
     def eval_context(self, now: float | None = None) -> EvalContext:
         tz: ZoneInfo = self.alerts.tz
-        extras = {"runways": self.runways, "sightings": self.sightings}
+        extras = {
+            "runways": self.runways, "sightings": self.sightings, "airports": self.airport_index,
+        }  # fmt: skip
         return EvalContext(now or self.ctx.clock.now(), self.places_by_id(), tz, extras)
 
     def facts_for_all(self, ctx: EvalContext) -> list[LiveFacts]:

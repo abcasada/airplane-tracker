@@ -26,6 +26,12 @@ function make(name: string, description: string, conds: Condition[], place?: Pla
 
 export const TEMPLATES: Template[] = [
   {
+    key: 'aircraft-anywhere',
+    title: 'Specific aircraft, anywhere',
+    description: 'Get notified when these aircraft are flying, wherever they are. Add tail numbers (registrations).',
+    build: () => make('Followed aircraft', 'Notifies when any of these aircraft shows up, anywhere.', [c('registration', 'in', [])], undefined, null),
+  },
+  {
     key: 'military-visible',
     title: 'Military visible from where I am',
     description: 'Military aircraft high enough above your horizon to see, from home or an active travel viewpoint.',

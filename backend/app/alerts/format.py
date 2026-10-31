@@ -2,6 +2,7 @@
 
 import re
 
+from app import geo
 from app.filters.facts import LiveFacts
 from app.places.models import Place
 from app.predict.engine import prediction_for
@@ -29,7 +30,11 @@ TEMPLATE_KEYS = {
     "squawk": "Squawk code",
     "filters": "Names of the matching filters",
     "eta": "Predicted arrival or visibility, e.g. 'in ~4 min' (empty if not predicted)",
+    "near": "Where it is relative to the nearest airport, e.g. '12 nm SW of Dover AFB (KDOV)'",
 }
+
+# Beyond this from the display place, the title says where the aircraft is instead.
+FAR_NM = 100.0
 
 DEFAULT_TITLE = "✈ {aircraft} · {distance} {direction} of {place}"
 
@@ -93,11 +98,11 @@ def template_values(
         "hex": t.hex,
         "place": place.name if place else "",
         "distance": f"{dist:.1f} nm" if dist is not None else "",
-        "direction": _compass16(bearing) if bearing is not None else "",
+        "direction": geo.compass16(bearing) if bearing is not None else "",
         "altitude": fmt_alt(t.altitude_ft, t.on_ground),
         "speed": f"{round(t.gs_kt)} kt" if t.gs_kt is not None else "",
         "vertical": _vertical(t.vertical_rate_fpm),
-        "elevation": f"{round(elev)}° up" if elev is not None and elev > 0 else "",
+        "elevation": f"{round(elev)}° up" if elev is not None and round(elev) >= 1 else "",
         "military": "military" if cls and cls.military else "",
         "military_reasons": "; ".join(cls.reasons) if cls and cls.military else "",
         "category": (pa.category or "") if pa else "",
@@ -105,15 +110,8 @@ def template_values(
         "squawk": t.squawk or "",
         "filters": ", ".join(filter_names),
         "eta": fmt_eta(eta_seconds(facts, place)),
+        "near": facts.get("near_description") or "",
     }
-
-
-_COMPASS16 = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-              "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]  # fmt: skip
-
-
-def _compass16(deg: float) -> str:
-    return _COMPASS16[round((deg % 360) / 22.5) % 16]
 
 
 def render(template: str, values: dict[str, str]) -> str:
@@ -125,16 +123,22 @@ def render(template: str, values: dict[str, str]) -> str:
 
 
 def default_title(values: dict[str, str]) -> str:
+    far = not values["distance"] or float(values["distance"].split()[0]) > FAR_NM
+    if far and values["near"]:
+        return render("✈ {registration} {aircraft} · {near}", values)
     if values["eta"] and values["eta"] != "now" and values["place"]:
         return render("✈ {aircraft} · {eta} · {distance} {direction} of {place}", values)
     if values["place"] and values["distance"]:
         return render(DEFAULT_TITLE, values)
-    return render("✈ {aircraft}", values)
+    return render("✈ {registration} {aircraft}", values)
 
 
 def default_message(values: dict[str, str]) -> str:
+    ident = "{callsign} · {operator}"
+    if values["registration"] != values["callsign"]:  # GA callsigns are often the tail number
+        ident += " · {registration}"
     lines = [
-        render("{callsign} · {operator} · {registration}", values),
+        render(ident, values),
         render("{altitude} · {speed} · {vertical} · {elevation}", values),
     ]
     if values["squawk"] in ("7500", "7600", "7700"):

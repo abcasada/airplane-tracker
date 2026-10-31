@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
 PosSource = Literal["adsb", "mlat", "tisb", "other"]
 
@@ -67,3 +67,14 @@ class AreaSource(Protocol):
     max_rate_per_s: float  # the published limit; the poller uses at most half
 
     async def fetch(self, query: AreaQuery) -> SourceBatch: ...
+
+
+@runtime_checkable
+class LookupSource(Protocol):
+    """A source that can also find specific aircraft wherever they are (not a global feed)."""
+
+    name: str
+
+    async def fetch_hexes(self, hexes: list[str]) -> SourceBatch: ...
+
+    async def fetch_registration(self, registration: str) -> SourceBatch: ...

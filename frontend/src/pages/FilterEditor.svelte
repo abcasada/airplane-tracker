@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import AircraftRow from '../components/AircraftRow.svelte'
   import Backtest from '../components/Backtest.svelte'
+  import WatchStatus from '../components/WatchStatus.svelte'
   import ExplainTree from '../components/ExplainTree.svelte'
   import Funnel from '../components/Funnel.svelte'
   import GroupEditor from '../components/GroupEditor.svelte'
@@ -237,6 +238,7 @@
           <h2>Conditions</h2>
           <GroupEditor group={draft.definition.root} funnel={funnelById} />
         </section>
+        {#if saved}<WatchStatus filterId={saved.id} {dirty} />{/if}
         <section class="card">
           <h2>Notifications</h2>
           <NotifyEditor bind:definition={draft.definition} />

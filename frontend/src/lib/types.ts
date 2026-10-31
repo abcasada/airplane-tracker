@@ -358,3 +358,24 @@ export interface Airspace {
   controlling_agency: string | null
   parts_dropped: number
 }
+
+// ---- watchlist ------------------------------------------------------------------------------
+
+export interface WatchEntry {
+  kind: 'hex' | 'reg'
+  value: string
+  hexes: string[]
+  filter_ids: number[]
+  filters: string[]
+  last_seen: number | null
+  resolved: boolean
+  live: {
+    hex: string
+    callsign: string | null
+    altitude_ft: number | null
+    on_ground: boolean
+    gs_kt: number | null
+    near: string | null
+    seen_s: number
+  } | null
+}

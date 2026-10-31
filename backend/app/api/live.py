@@ -101,6 +101,11 @@ async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
         "dataset_busy": rt.datasets.busy,
         "recordings": rt.recorder.usage(),
         "sightings": await rt.sightings.stats(),
+        "watch": {
+            "aircraft": len(rt.watch.entries),
+            "last_run": rt.watch.last_run,
+            "last_found": rt.watch.last_found,
+        },
         "coverage": rt.coverage.report(),
         "notifications_today": await rt.alerts.sent_today(now),
         "daily_ceiling": rt.alerts.settings.daily_ceiling,
@@ -169,3 +174,25 @@ def rt_event(event: str, data: Any) -> str:
     import json
 
     return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+
+@router.get("/watch")
+async def watchlist(ctx: Ctx, _: CurrentUser) -> list[dict[str, Any]]:
+    """Aircraft followed anywhere (from filters' registration/hex conditions) and where they are."""
+    rt = ctx.rt()
+    names = {f.id: f.name for f in rt.filters}
+    ectx = rt.eval_context()
+    out = []
+    for e in rt.watch.status():
+        tracks = [t for h in e["hexes"] if (t := rt.store.get(h)) is not None]
+        live = None
+        if tracks:
+            t = max(tracks, key=lambda x: x.last_seen)
+            f = LiveFacts(t, ectx)
+            live = {
+                "hex": t.hex, "callsign": t.callsign, "altitude_ft": t.altitude_ft,
+                "on_ground": t.on_ground, "gs_kt": t.gs_kt, "near": f.get("near_description"),
+                "seen_s": round(ectx.now - t.last_seen, 1),
+            }  # fmt: skip
+        out.append({**e, "filters": [names.get(i, "?") for i in e["filter_ids"]], "live": live})
+    return out
