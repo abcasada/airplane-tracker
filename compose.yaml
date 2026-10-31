@@ -1,0 +1,30 @@
+# Airplane Tracker + its own Cloudflare Tunnel.
+# 1. cp .env.example .env and fill it in (at least CF_TUNNEL_TOKEN).
+# 2. docker compose up -d --build
+# 3. docker compose logs airplane-tracker   # shows the one-time setup token
+services:
+  airplane-tracker:
+    build: .
+    image: airplane-tracker:local
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - airplane-data:/data
+    mem_limit: 256m
+    networks: [tracker]
+    # No "ports:" on purpose: only cloudflared talks to the app.
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.9.3
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:?set CF_TUNNEL_TOKEN in .env}
+    depends_on: [airplane-tracker]
+    networks: [tracker]
+
+networks:
+  tracker: {}
+
+volumes:
+  airplane-data: {}

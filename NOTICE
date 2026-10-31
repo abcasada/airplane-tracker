@@ -1,0 +1,23 @@
+Airplane Tracker
+Copyright (c) 2026 the Airplane Tracker contributors. Licensed under the MIT License (see LICENSE).
+
+This software downloads and uses the following third-party data at runtime. None of it is
+included in this repository.
+
+- adsb.fi Open Data API (https://adsb.fi). Personal, non-commercial use; attribution required.
+- adsb.lol API (https://adsb.lol). Data licensed under the Open Database License (ODbL) 1.0.
+- tar1090-db by wiedehopf (https://github.com/wiedehopf/tar1090-db), derived from the
+  Mictronics readsb database. Used for aircraft type/registration and military address ranges.
+- plane-alert-db by SDR-Enthusiasts, Ramon F. Kolb (kx1t) and contributors
+  (https://github.com/sdr-enthusiasts/plane-alert-db). Open Database License (ODbL) 1.0;
+  individual contents under the Database Contents License (DbCL) 1.0.
+- VRS standing data by Virtual Radar Server (https://github.com/vradarserver/standing-data). CC0.
+- adsb.im route API (https://adsb.im).
+- Planespotters.net photo API (https://www.planespotters.net). Photos are shown only in the web UI,
+  with the photographer credit and a link, as its terms require.
+- OurAirports (https://ourairports.com/data/). Public domain.
+- FAA Aeronautical Data Delivery Service (ADDS), special use airspace
+  (https://adds-faa.opendata.arcgis.com/). US government work, public domain. Queried only when
+  the user searches for airspace, and cached.
+- Map tiles (c) OpenStreetMap contributors (https://www.openstreetmap.org/copyright).
+- USGS Elevation Point Query Service (https://epqs.nationalmap.gov). Public domain.

@@ -1,448 +1,677 @@
-# Airplane Tracker — Build Plan
+# Airplane Tracker — Build Plan (v3)
 
-Status: **draft, awaiting approval**. Nothing in here is built yet.
-Research and live API checks were done on 2026-10-14. Re-check terms before each phase that adds a new source.
+Status: **draft v3, awaiting approval**. Nothing in here is built yet.
+Research and live API checks were done on 2026-10-14/15. Re-check terms before each phase that adds a new source.
 
-Personal ADS-B alert service. It runs in one Docker container on a home server and has a PWA web UI. It alerts on aircraft that match user-defined rules, both aircraft nearby now and aircraft predicted to pass over a zone soon.
+Personal ADS-B alert service. It runs in one Docker container on a home server and has a PWA web UI reachable at your own domain. Live aircraft data from free public APIs is enriched and classified (military especially), then run through **filters you build and fine-tune in a dashboard**. A filter can ask:
+
+- is it **visible from where you are**, now or soon?
+- is it **headed to an airport**?
+- is it **headed into an area**?
+- or anything else the aircraft data supports.
+
+Matches are pushed to your Android phone through Home Assistant.
+
+### What changed since v2 (from your answers)
+
+- **Filters are the product.** The filter dashboard (§10) is the centerpiece: a visual builder, a live match preview with a "funnel" view, a backtest against recorded traffic, shadow mode, version history, and one-tap tuning from any alert. "Rules" are now called **filters**.
+- **No built-in special cases.** There's no KSLN logic, flight-school or pattern-traffic detection, and no practice-approach labelling. KSLN and Smoky Hill are just places you define, and everything about what alerts is up to your filters. The app supplies generic facts (arrival score, inside-area, visibility, military score…) as filter fields.
+- **Repeat suppression is opt-in.** The only always-on de-duplication is "one notification per aircraft per episode, updated in place". "Don't notify about the same aircraft again within X minutes" is an optional filter setting, **off by default** (§9).
+- **Free sources only to start.** Paid sources (FlightAware, FR24) stay as future plug-ins (§3.4).
+- **Cloudflare Tunnel** deployment (a `cloudflared` container next to the app). Home Assistant is reached directly on the same server.
+- **New free data found:**
+  - **plane-alert-db**: ~17k "interesting" aircraft with military/government/police categories and tags (ODbL).
+  - **adsb.im route API**: working, with a plausibility flag.
+- **JetTip** researched: it runs on the **FAA's flight-plan feed (SWIM SCDS)**, not ADS-B. That feed is free and could become an optional source (§3.5).
+- **Existing GitHub projects** reviewed for reuse (§11).
 
 ---
 
-## 1. Recommended stack
+## 1. Decisions so far
+
+| Topic | Decision |
+|---|---|
+| Phone / notifications | Android, **Home Assistant Companion app**. HA runs in a container on the same server; long-lived access token approved. |
+| Access | `adsb.<your-domain>` via a **Cloudflare Tunnel** container (DNS is on Cloudflare). No ports opened. |
+| Server | x86-64. RAM isn't a constraint, but the app stays small. |
+| Language | Python |
+| Data | **Free sources only** for now; paid sources stay pluggable for later |
+| Places | Home viewpoint (Salina); targets such as KSLN and the Smoky Hill range are entered as *your* config. No special handling for any of them. |
+| Alerting logic | Entirely user-defined filters. Visibility defaults (15° elevation, 20/12/5 nm slant range by size) are approved as starting values and fully adjustable. |
+| Repeat suppression | Optional per-filter setting, **off by default** |
+| Repo | Private until the first working version (Phase 1), then public under **MIT** |
+
+---
+
+## 2. Recommended stack
 
 The design goal is **one small container, one process, no extra databases**.
 
 | Layer | Choice | Why |
 |---|---|---|
-| Backend | **Python 3.12, FastAPI, uvicorn (single worker), asyncio** | One event loop runs the pollers, the evaluation loop and the HTTP API. Fast to iterate on. The prediction math is easy to read and test. |
-| HTTP client | `httpx` (async, HTTP/2, gzip) | Both sources serve gzip; see §2.3 for sizes. |
-| Storage | **SQLite** (WAL mode) via `aiosqlite`, plain SQL migrations | No DB server. It holds config, rules, alert history, caches and the imported aircraft DB (~620k rows). |
-| Live state | In-process memory (dict of tracks) | Rebuilt within one poll after a restart. Only alert and cooldown state must persist, and it lives in SQLite. |
-| Numerics | `numpy` (prediction ensemble only) | Vectorised trajectory sampling. It is the only "heavy" dependency (~30 MB in the image). |
-| Validation | `pydantic` v2 | Rule and zone schemas, shared by the API and the engine. |
-| Auth | Built-in single-user login (argon2id + HttpOnly session cookie), with an optional `AUTH_MODE=proxy` | See §1.1. |
-| Frontend | **Svelte + Vite**, built to static files and served by FastAPI | Small bundle with no runtime framework. Good fit for the form-heavy rule and zone editors. |
-| Map | **Leaflet** (~40 KB) with an OSM tile layer (tile URL is configurable) | Much lighter than MapLibre. Raster tiles are fine at this scale. |
-| Live updates | Server-Sent Events | Simpler than WebSockets and works through any reverse proxy. |
-| PWA | Web app manifest + small service worker (app-shell cache only) | Installable on iOS and Android, works on desktop. Needs HTTPS. |
-| Tooling | `uv`, `ruff`, `mypy --strict`, `pytest`; `npm` + `svelte-check` for the frontend | |
-| Container | Multi-stage build: node stage builds the UI, then `python:3.12-slim` runtime, non-root user | |
+| Backend | **Python 3.13, FastAPI, uvicorn (single worker), asyncio** | One event loop runs the pollers, the evaluation loop and the HTTP API. |
+| HTTP client | `httpx` (async, gzip) | |
+| Storage | **SQLite** (WAL) via `aiosqlite`, numbered SQL migrations | Config, places, filters (+ versions), alert history, sightings, caches, imported aircraft DBs |
+| Live state | In-process memory (per-aircraft ring buffers) | Rebuilt within one poll after a restart |
+| Numerics | `numpy` (prediction ensemble), `shapely` (polygon areas) | |
+| Validation | `pydantic` v2 | One schema for the filter AST, API, engine and DB |
+| Auth | Built-in single-user login + **TOTP 2FA** (argon2id, `pyotp`) | Internet-facing |
+| Frontend | **Svelte + Vite** SPA, served by FastAPI as static files | Good fit for a rich, form-heavy filter builder with a small bundle |
+| Map | **Leaflet** + OSM raster tiles (URL configurable) | Light |
+| Live updates | Server-Sent Events | Heartbeat every 20 s, because Cloudflare closes idle responses after ~100 s |
+| PWA | Manifest + small service worker (app shell only) | Android Chrome installs it as an app |
+| Tooling | `uv`, `ruff`, `mypy --strict`, `pytest`, `respx`; `npm`, `svelte-check`, `vitest` | |
+| Container | Multi-stage build, `python:3.13-slim`, non-root, `/data` volume, healthcheck | Targets: under 200 MB image, under 150 MB RSS (backtests may briefly use more), under 2% CPU average |
 
-**Footprint targets:** image under ~200 MB, RSS under ~150 MB, CPU under 2% average at a 10 s poll interval. The compose file sets `mem_limit: 256m` and a healthcheck.
+### 2.1 Deployment: Cloudflare Tunnel + Home Assistant on the same host
 
-The leaner alternative is **Go**: one static binary, ~20–30 MB RAM, ~25 MB image. It costs more code for the same features and a less convenient numeric and test workflow. Python is recommended unless you would rather maintain Go (see Questions).
+```yaml
+# compose.yaml (sketch; real values come from .env)
+services:
+  airplane-tracker:
+    image: airplane-tracker:latest
+    volumes: [ "./data:/data" ]
+    env_file: .env                      # HA_URL, HA_TOKEN, SECRET_KEY, TRUSTED_PROXIES…
+    extra_hosts: [ "host.docker.internal:host-gateway" ]   # reach HA if it runs with network_mode: host
+    mem_limit: 256m
+    restart: unless-stopped
+    # no "ports:" — only cloudflared reaches it
+  cloudflared:
+    image: cloudflare/cloudflared:<pinned>
+    command: tunnel run
+    environment: [ "TUNNEL_TOKEN=${CF_TUNNEL_TOKEN}" ]
+    restart: unless-stopped
+```
 
-### 1.1 Authentication
+- In the Cloudflare Zero Trust dashboard, the tunnel's public hostname `adsb.<your-domain>` points to `http://airplane-tracker:8080`. This is the same pattern as your other apps.
+- **Don't** put Cloudflare Access in front: it breaks PWA background requests. The app's own login + TOTP protects it.
+  - *Optional extra:* a free Cloudflare WAF rate-limiting rule on `/api/auth/*`.
+- Client IP for login lockout comes from `CF-Connecting-IP`, trusted only when the request arrives from the `cloudflared` container's network.
+- **Home Assistant:** the app calls HA's REST and WebSocket API at `HA_URL`:
+  - `http://host.docker.internal:8123` if HA uses host networking (the usual setup), or
+  - the HA container name if both share a Docker network.
 
-- **Default: built-in single-user auth.**
-  - The password hash (argon2id) is set on first run from an env var or a CLI command.
-  - Sessions use a long-lived (30-day, sliding) HttpOnly, `Secure`, `SameSite=Lax` cookie. Login attempts are rate-limited.
-  - Every route except `/healthz`, `/login`, the manifest and static icons requires a session.
-  - Reason for the default: installed PWAs on iOS handle SSO redirect flows (Authelia, Authentik, Cloudflare Access) poorly. Service-worker fetches hit the redirect and break, and the PWA's cookie jar is separate from Safari's.
-- **Optional: `AUTH_MODE=proxy`.** Trusts a `Remote-User`-style header from your reverse proxy, but only from configured proxy IPs. Use this if you already run forward-auth and it works with your phone.
-- HTTPS is required in either mode. PWA install, geolocation ("use my location") and web push all need a secure context. TLS terminates at your existing reverse proxy; the app doesn't handle certificates.
+  The setup wizard has a "Test connection" button and lists your `notify.mobile_app_*` services to pick from.
+
+**Auth hardening:**
+
+- password + TOTP + 10 recovery codes; 30-day sliding `HttpOnly` / `Secure` / `SameSite=Lax` session
+- lockout with exponential backoff per IP and per account
+- CSRF (Origin check + token); CSP / HSTS / frame-deny headers; `/docs` off in production
+- audit log of logins and changes
+- nothing sent off-box (notifications etc.) contains your home coordinates
 
 ---
 
-## 2. Data sources
+## 3. Data sources
 
-### 2.1 Live position sources (checked 2026-10-14)
+> **v4 proposal (2026-10-31), pending your answers:** use every free source plus your own receiver, merged by ICAO hex, and use paid sources (Flightradar24 first) only on demand for aircraft a filter cares about. The full list, terms, feeder perks and a sign-up checklist are in **[SOURCES.md](SOURCES.md)**. Changes to the design below:
+> - **Failover becomes merge.** Every enabled live source is polled within its own budget (≤50% of its published limit) and merged by hex; the freshest position wins. Each aircraft records which sources saw it (`sources` and `seen_by_my_receiver` fields), and a **Sources report** shows how many aircraft each source saw that no other did.
+> - **Local receiver** (readsb/ultrafeeder `aircraft.json`, optional 978 MHz UAT) is a source with no rate limit, polled every second over the Docker network.
+> - **Paid sources are never polled continuously.** They answer only for filter candidates that the free feeds lost, and on-demand lookups, behind a monthly budget cap with a credit meter.
+> - **Container images are not published** (no GHCR releases), per your decision.
+
+### 3.1 Free live position sources (checked 2026-10-14/15)
 
 | Source | Access | Rate limit | Terms | Live check | Verdict |
 |---|---|---|---|---|---|
-| **adsb.fi Open Data** — `opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{nm}` (max 250 nm; the old v2 path is deprecated) | No key | **1 req/s** on public endpoints. 400/401/403/404/429 responses count toward a **temporary IP block**. | Personal, **non-commercial** only. **Must cite adsb.fi and link to it.** As-is; may be cut off at any time. | 200 OK. Returns `r`, `t`, `desc`, `ownOp`, `year`, `nav_heading`, `nav_altitude_mcp`, `baro_rate`/`geom_rate`, `squawk`, `emergency`. | **Primary** |
-| **adsb.lol** — `api.adsb.lol/v2/point/{lat}/{lon}/{nm}` (max 250 nm). Also has `/v2/mil`, `/v2/sqk/{code}`, `/v2/type/{t}`, `POST /api/0/routeset` | No key **today**. The docs say a key "will be required in the future", obtained by feeding. | Not published; "dynamic based on load". | Data is **ODbL**. Free to use; asks you to contact them for "production" use. | 200 OK with the same readsb-style JSON. `routeset` returned **HTTP 201 with an empty body** in testing. | **Secondary / failover** |
-| **airplanes.live** — `api.airplanes.live/v2/point/...` | — | Docs said 1 req/s, non-commercial (docs dated 2023) | — | **HTTP 403**: "Please contact us at contact@airplanes.live…". Their API docs repo was archived in April 2026. | **Excluded** unless you email them and get approval. The source plug-in would be trivial since the format is identical. |
-| **OpenSky Network** REST `/states/all?lamin..` | **OAuth2 client credentials** (basic auth no longer accepted). Token TTL 30 min. | Credits per day: anonymous 400, registered 4,000, active feeder 8,000. A bbox of ≤25 sq° costs 1 credit, up to 100 sq° costs 2. Resolution 5 s (10 s anonymous). | Non-commercial / research | Not polled (needs an account) | **Optional fallback only.** 4,000 credits/day means one small box every ~22 s at best. It has **no aircraft type or registration** (only an emitter category), so everything depends on local enrichment. |
-| ADS-B Exchange | Paid (RapidAPI) | — | — | — | Excluded (not free) |
-| **Your RTL-SDR** (later) | readsb/tar1090 `aircraft.json` over LAN | Unlimited | Yours | — | **Planned source plug-in.** Same JSON shape as adsb.fi and adsb.lol. |
+| **adsb.fi Open Data** — `opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{nm}` (≤250 nm) | No key | **1 req/s**; 4xx responses count toward a **temporary IP block** | Personal, **non-commercial**; **must cite and link adsb.fi** | 200 OK. Has `r`, `t`, `desc`, `ownOp`, `year`, **`dbFlags`**, `nav_heading`, `nav_altitude_mcp`, vertical rates, `squawk`, `emergency`, `category`. | **Primary** |
+| **adsb.lol** — `api.adsb.lol/v2/point/{lat}/{lon}/{nm}` (≤250 nm) | No key today (a key "obtained by feeding" is planned) | Unpublished, "dynamic" | **ODbL**; contact them for production use | 200 OK, same JSON shape | **Failover** |
+| airplanes.live | — | — | — | **403** "Please contact us…" | Excluded |
+| OpenSky Network | OAuth2 | 4,000 credits/day registered | Non-commercial | not polled | Possible later fallback. No type or registration. |
 
-**Coverage caveats.** All community aggregators depend on volunteer feeders. Coverage is good in most of the US and Europe and patchy in rural areas, mountains and over water. *Low-altitude* traffic near your house (helicopters, GA) is the most likely to be missing unless a feeder is nearby. Your own receiver fixes exactly that gap. Military aircraft often don't broadcast ADS-B positions; some appear only via MLAT (less accurate, flagged as such) or not at all. adsb.fi and adsb.lol do not filter LADD/PIA aircraft.
+**Coverage around Salina** (live check, 80 nm around KSLN on 2026-10-15):
 
-**Bonus for feeding:** feeding adsb.fi or adsb.lol unlocks feeder-only endpoints and protects you from adsb.lol's future key requirement.
+- 34 aircraft: mostly airliners in cruise, plus bizjets and regional jets below 3,000 ft near other airports.
+- **`SAM491` (98-0001, C-32A)** was flagged military via `dbFlags=1`.
+- Low-altitude coverage near Salina is measured by a Phase 1 **coverage report** (lowest altitude seen by distance from each place).
+- Fighters often fly with ADS-B off. Expect heavies and helicopters more than fighters.
 
-### 2.2 Pluggable source interface
+### 3.2 Query planning (efficient polling)
 
-```python
-class Source(Protocol):
-    name: str
-    kind: Literal["area", "local"]          # area = queried by circle; local = whatever a receiver hears
-    async def fetch(self, q: AreaQuery | None) -> SourceBatch   # normalized Observations + fetch metadata
-    limits: RateLimit                       # token bucket enforced by the poller, not the source
-```
+- **Never pulls global feeds.**
+  - Each active place gets an **inner circle** (radius + 25 nm, polled every 10 s, 5 s while something is under 2 min out).
+  - It also gets an **outer circle** (radius + horizon × 8 nm/min, ≈ 85 nm for a 10-min horizon, polled every 30 s).
+  - Everything slows to 60 s when nothing is in reach.
+  - Overlapping circles merge. Places within ~15 nm of each other (home, KSLN, the range) collapse into one inner and one outer query.
+- Token-bucket budget ≤0.5 req/s per source (half of adsb.fi's limit). The Salina setup uses ~0.13 req/s.
+- Circuit breaker per source, failover adsb.fi → adsb.lol. Exponential backoff on any 4xx/429.
+- Bandwidth: a few KB per poll around Salina (tens of MB/day). Even very busy JFK was 32–38 KB per 80 nm poll.
 
-- Every source normalizes into one `Observation` dataclass. Units are **nm, kt, ft, ft/min, degrees true, UTC epoch seconds**.
-- `Observation.pos_time = now - seen_pos`. Positions older than 60 s are dropped.
-- The **merge layer** keys on ICAO hex and keeps the freshest position. On ties a local receiver beats an aggregator. It also records `src` and `pos_source` (adsb, mlat, tisb, other) for confidence scoring.
-- Failover: each source has a circuit breaker. After 3 failures or any 429, back off exponentially (max 5 min) and switch to the next source in the priority list. The poller never retries a 4xx at full speed, because adsb.fi counts 4xx toward IP blocks.
+### 3.3 Pluggable source interface
 
-### 2.3 Efficient polling: query planner
+`Source` protocol → normalized `Observation` (nm, kt, ft, ft/min, degrees true, UTC epoch seconds). The merge layer keys on ICAO hex and keeps the freshest position.
 
-Zone definitions are never sent to a source. A **query planner** turns active zones into a small set of circles.
+Kinds:
 
-1. **Reach.** For each active zone, compute the radius that captures anything that could arrive within the prediction horizon: `reach = zone.radius + horizon_min × 8 nm/min`. 8 nm/min is about 480 kt. With the default 10-minute horizon, that is roughly 85 nm for a 5 nm home zone.
-2. **Two tiers per zone:**
-   - **Inner circle** (`zone.radius + 25 nm`), polled **every 10 s**. These aircraft are near or arriving within ~3 min.
-   - **Outer circle** (`reach`, capped at 250 nm), polled **every 30 s**. At 480 kt an aircraft moves 4 nm in 30 s, which is fine for 5–10 minute predictions.
-   - **Adaptive:** the inner tier drops to 5 s while a candidate is under 2 min out. Both tiers slow to 60 s when nothing is in reach (e.g. 3 a.m.).
-3. **Merging.** Overlapping circles from different zones are merged: if one circle contains another, poll only the larger one. Travel zones are only polled while active (inside their date window, or an ad-hoc zone before it expires).
-4. **Budget.** A token bucket per source is set to **≤0.5 req/s** (half of adsb.fi's limit). One zone costs ~0.13 req/s (10 s inner + 30 s outer). Home plus two travel zones is ~0.4 req/s before merging, which is why circle merging and the idle slow-down matter.
-5. **Bandwidth.** Measured at JFK (one of the busiest areas in the US) on 2026-10-14: an 80 nm circle held 284 aircraft, **32–38 KB gzipped**. At that density, home-zone polling (inner + outer tiers) is roughly 150–200 MB/day, much less in quieter places.
+- **area** (point/radius APIs: adsb.fi, adsb.lol, future OpenSky/FR24)
+- **local** (a receiver's `aircraft.json`, if you ever add one)
+- **schedule** (filed flight plans, e.g. FAA SWIM, §3.5)
 
-### 2.4 Enrichment sources (all cached locally)
+Enrichment plug-ins (routes, flight plans) have their own interface with a per-source budget guard. Paid ones plug in there without touching the engine.
 
-| Need | Source | License / limits | How it's used |
-|---|---|---|---|
-| Type code, registration, description, year, owner, **military flag** | **tar1090-db** `aircraft.csv.gz` (wiedehopf/tar1090-db, `csv` branch, ~8 MB, ~622k rows; derived from the Mictronics readsb DB) | No license file in the repo. Treat it as personal-use and don't redistribute it in this repo. | Downloaded at startup and weekly into a SQLite table. Columns are `icao;reg;type;flags;desc;year;ownOp;`. **`flags` is a bit string: position 0 = military, 1 = interesting, 2 = PIA, 3 = LADD** (verified: US T-38s are `10`, FAA's N1 is `0001`). ~29k aircraft are flagged military. It fills gaps where the live source lacks `t`/`r`, and is the *only* enrichment for RTL-SDR and OpenSky data. |
-| Airline / operator from callsign | **VRS standing-data** (`vradarserver/standing-data`) airlines + routes CSVs | **CC0** | ICAO 3-letter callsign prefix gives the operator. **`ownOp` is the registered owner, not the operator.** The live check showed an Endeavor CRJ-900 with `ownOp` = "BANK OF UTAH TRUSTEE". Operator rules match on airline (from callsign) *or* owner. |
-| Origin / destination | 1) **VRS standing-data routes** (bulk CSV, local, CC0); 2) **adsbdb** `api.adsbdb.com/v0/callsign/{cs}` on a miss; 3) adsb.lol `routeset` (currently returning empty) | adsbdb has no published rate limit. Its route data is copyright of its compilers and **"may not be copied, published, or incorporated into other databases"**: cache it privately and never export it. | Cached per callsign for 24 h, misses for 6 h. **Every route gets a plausibility check:** the aircraft must lie within ~50 nm (plus a margin scaled by route length) of the origin→destination great circle, or be near origin or destination at low altitude. Callsign-based routes are often stale. In testing, adsbdb said DAL1061 was BOS→SFO while it was at 75 ft beside JFK. Implausible routes are shown greyed out and **ignored by the predictor**. |
-| Airports, runways, elevations | **OurAirports** `airports.csv`, `runways.csv` (nightly) | **Public domain** | Used by the "descending toward a nearby airport" signal (§4.4) and runway headings for approach paths. Refreshed weekly. |
-| Type designator to friendly name | `desc` field, or tar1090-db's ICAO type table | — | Used in notification text ("C-17 Globemaster III"). |
+### 3.4 Paid options (deferred, plug-in ready)
 
-**Caching rules:** every lookup goes through one `cache` table with `(namespace, key, value_json, fetched_at, ttl_s, negative)`. Bulk datasets are imported into their own tables, swapped in by an atomic table rename, and stamped with a version so a failed download never leaves a half-imported table.
+| Service | Price | What it would add |
+|---|---|---|
+| FlightAware AeroAPI Personal | First $5/month of usage free; $0.005 per `/flights/{ident}`; card required | Filed origin/destination for IFR flights, including GA/bizjets |
+| Flightradar24 API Explorer | $9/month, 30,000 credits | Live positions with origin/destination |
+
+Not built until you ask. Any paid source must go through an app-enforced monthly budget cap.
+
+### 3.5 What JetTip does, and whether to copy it
+
+[JetTip](https://blog.jettip.net/real-time-faa-data-is-now-powering-jettips-smart-flight-alert-system) alerts on rare aircraft (special liveries, charters, unusual types) coming to *your* airport. Its post of Oct 2023 says it runs on a **real-time feed from the FAA's SWIM Cloud Distribution Service (SCDS)**, *not* ADS-B. It mentions ADS-B only as a possible future addition. That's why it can warn **hours ahead**: broad flight plans (carrier + flight number) appear **24–36 h before departure**, though tail numbers often only near departure.
+
+**FAA SWIM SCDS:**
+
+- **free** for non-operational use (developers, hobbyists); sign-up via the FAA SWIFT portal, per-service access agreement, approval historically within ~72 h
+- streams US flight-plan and flight data (e.g. TFMData) over a Solace JMS connection
+- sensitive flights, including military, are reportedly **excluded** (per a pre-launch article; to verify)
+
+**Fit for this app:** a good **optional "schedule" source** for *civil* aircraft ("a 747 has filed a flight plan into KSLN for 14:20 tomorrow"), feeding the same filters with an `arrival_filed` fact. It won't help with military traffic. It adds a Solace client dependency and a continuous national stream to filter locally: more CPU/RAM than ADS-B polling, though still modest.
+
+**Recommendation:** Phase 5, only if you want "scheduled visitor" alerts. ADS-B stays the core because it sees military, unfiled and VFR traffic.
 
 ---
 
-## 3. Data model (SQLite)
+## 4. Places
 
-Persistent tables. Live tracks stay in memory.
+| Kind | Defined by | Facts it provides to filters |
+|---|---|---|
+| **Viewpoint** | Point + elevation; visibility settings; optional date window or GPS expiry ("Use my location") | distance, bearing, elevation angle, slant range, `visible_now`, `predicted_visible` + ETA |
+| **Airport** | ICAO code; position, elevation and runways auto-filled from OurAirports | distance, `arrival_score` (generic, §6.2), `claimed_destination == this`, ETA |
+| **Area** | Polygon (draw, or paste coordinates; FAA airspace search later) or circle; optional altitude band and active schedule | `inside_now`, time inside, `predicted_entry` + ETA |
+
+Places carry no behavior of their own; filters decide what matters. Place conditions can also target **any active viewpoint** (home, or a travel viewpoint while its dates are active), so one filter follows you on trips: yes/no fields are true if true for any viewpoint, distances take the nearest. Places can carry **active dates** (trips) and **weekly active hours** (e.g. a range's published hours, exposed as the "Within the place's active hours" field). Your starting set is entered in the app and stored in `/data`, not the repo:
+
+- **Home viewpoint**
+- **KSLN**: auto-filled
+- **Smoky Hill R-3601A/B** area: paste the 7 vertices from 80 FR 60528 (38°45′20″N 97°46′01″W … 38°45′20″N 97°56′01″W), surface–FL230
+
+Default visibility settings for a viewpoint (approved as a starting point, all editable):
+
+- minimum elevation angle 15°
+- maximum slant range 20 nm for heavy/large, 12 nm for medium, 5 nm for light/rotorcraft
+
+---
+
+## 5. Enrichment and military classification
+
+### 5.1 Enrichment sources (downloaded at runtime, cached in SQLite; never committed)
+
+| Need | Source | License | Notes |
+|---|---|---|---|
+| Type, registration, description, year, owner, military/LADD/PIA flags | **tar1090-db** `aircraft.csv.gz` (~622k rows) + `ranges.json` (32 military address blocks) | No license file; personal use | Weekly refresh. Also yields `type_stats` (share of military airframes per type). |
+| **"Interesting" aircraft list** with categories and tags | **plane-alert-db** (`sdr-enthusiasts/plane-alert-db`) — `plane-alert-db.csv`, ~17.3k aircraft | **ODbL 1.0 / DbCL 1.0** | Columns: ICAO, registration, operator, type, ICAO type, **CMPG** (Civ/Mil/Pol/Gov), **Tag 1–3**, **Category** (54, e.g. *USAF*, *Zoomies* (fast jets), *Oxcart* (intel), *Gunship*, *Special Forces*, *UAV*, *Toy Soldiers* (armies), *Dictator Alert*…), link. Weekly refresh. Optional `plane_images.csv` (~12k photo links) for the UI. |
+| Operator from callsign | VRS standing-data airlines | CC0 | `ownOp` is the registered *owner* (often a bank trustee) |
+| Routes by callsign | **adsb.im** `POST /api/0/routeset` (batch, returns multi-leg routes + **`plausible`** flag; tested OK). Further sources (standing-data, adsbdb) can plug into the same `RouteService` if adsb.im ever stops answering. | adsbdb route data not redistributable | Cached 24 h (misses 6 h). Batched, ≤1 request per 30 s. adsb.lol's routeset returned empty. Military and GA callsigns come back "unknown", as expected. Our own plausibility check allows 30 nm off-route near airports, growing to 150 nm mid-route. |
+| Airports, runways, elevations | OurAirports | Public domain | Airport places, arrival score |
+| Viewpoint elevation | USGS Elevation Point Query Service (once per viewpoint) | Public | Manual override |
+
+### 5.2 Military classifier (FR24-style, explainable)
+
+FR24's military filter isn't publicly documented; it appears to use their own aircraft database. Ours **combines independent signals into a score with visible reasons**. The score and each signal are filter fields, so you decide how strict to be.
+
+| Signal | Default weight | Source / example |
+|---|---|---|
+| `dbFlags` military bit (API) or tar1090-db flag | 0.9 | `SAM491` 98-0001 C-32A had `dbFlags=1` |
+| **plane-alert-db CMPG = Mil** | 0.9 | ~9.9k military airframes, with category/tags explaining *what* it is |
+| ICAO address in a military block | 0.85 | tar1090-db `ranges.json` (US `adf7c8–afffff`) |
+| Military-only type (≥95% of airframes military) | 0.8 | Derived from tar1090-db: 42 types, e.g. `C17`, `K35R`, `B52`, `B1`, `F35`, `F15`, `A10`, `C30J`, `V22`, `P8`, `E6`, `R135`, `C5M` |
+| Dual-use type | 0.2–0.5 (scaled by share) | `H60`, `C130`, `F16`, `T38`, `TEX2`, `BE40` (T-1A), `B350` (C-12), **`B762` (the KC-46A is typed as a 767-200)** |
+| Owner/operator text | 0.8 | "AIR FORCE", "NAVY", "ARMY", "MARINE", "NATIONAL GUARD", "COAST GUARD" |
+| Callsign list | 0.6 | `RCH`/`REACH`, `SAM`, `SPAR`, `EXEC`, `VENUS`, `PAT`, `CNV`, `NAVY`, … (editable) |
+| Tactical-callsign heuristic | 0.3 | Word + 2–3 digits with no airline match, e.g. `HOOK21` |
+| Registration pattern | 0.6 | US serial `NN-NNNN(N)`, UK `ZZ123`, … (editable regexes) |
+| **Your overrides** | Final | Mark any hex or registration military or not |
+
+- Score = 1 − ∏(1 − wᵢ). Weights and lists are editable in the dashboard.
+- **Government** and **police** are separate classes (plane-alert-db CMPG Gov/Pol, owner text such as FAA, CBP, "STATE OF …"). FR24 lumps these together with military; here they're separate fields.
+- Validation: compare against the `dbFlags`-only baseline on recordings. The dashboard lists "possible military" (score 0.3–0.6) for review.
+
+---
+
+## 6. Destination and arrival facts (generic)
+
+### 6.1 Claimed destination
+
+- Resolution order: adsb.im routeset → VRS standing-data → adsbdb. Later, optional paid or SWIM plug-ins go first.
+- **Plausibility check** always runs: adsb.im's own `plausible` flag, plus our own great-circle check. adsbdb once listed DAL1061 as BOS→SFO while it sat at 75 ft beside JFK.
+- Filter fields:
+  - `origin`, `destination`, `route_legs`
+  - `route_source`
+  - `route_plausible`
+- Shown as "→ KSLN (adsb.im, plausible)" or "→ KSLN? (route DB, implausible)".
+
+### 6.2 Arrival score (any airport place, no airport-specific logic)
+
+A 0–1 `arrival_score` per aircraft per airport place, from generic signals:
+
+- distance and altitude above the field
+- descending, or level low; `nav_altitude_mcp` below current altitude
+- decelerating
+- track toward the airport, or aligned with any of its runways' extended centerlines
+- altitude consistent with a ~3° descent
+
+High scores also switch the predictor to a runway-approach projection (§7). How you use the score is up to your filters. For example:
+
+- `arrival_score ≥ 0.7`
+- `destination = KSLN OR arrival_score ≥ 0.5`
+- exclude whatever operators you don't care about
+
+### 6.3 Area facts
+
+`inside_now`, `seconds_inside`, `predicted_entry` (+ ETA and confidence), and `in_altitude_band`. The area's optional schedule (e.g. active Mon–Sat 0900–1700) is just another field you can filter on.
+
+---
+
+## 7. Prediction approach
+
+The goal is to produce **predicted facts** (`predicted_visible`, `predicted_entry`, `predicted_arrival`) with ETA and confidence, early enough to step outside, without false alarms from maneuvering aircraft. Filters consume them like any other field.
+
+### 7.1 Geometry
+- Local tangent plane per place; error negligible within 250 nm.
+- CPA `t* = clamp(-p·v/|v|², 0, H)`; circle-entry ETA from the quadratic; curved paths sampled at 10 s; polygon entry via `shapely`.
+- **Visibility:**
+  - elevation angle `atan2(alt_ft − viewpoint_elev_ft, ground_dist_ft)` ≥ the viewpoint's minimum, **and**
+  - slant range ≤ the size-based limit.
+- Optional day/night flag from sun position.
+
+### 7.2 Kinematics per aircraft
+From a ring buffer of the last ~40 positions:
+
+- smoothed track/speed; turn rate over ~60 s and its variability over ~2 min (the "maneuvering" signal)
+- vertical: `geom_rate`, falling back to `baro_rate`
+- **autopilot intent:**
+  - a `nav_heading` more than 5° off the current track ⇒ project a standard-rate turn onto it
+  - `nav_altitude_mcp` caps the climb/descent
+
+### 7.3 Two-stage prediction
+1. **Gate** (all aircraft, every update): straight line + `nav_heading` turn over horizon `H` (default 10 min, configurable). Candidates pass near or toward a place.
+2. **Ensemble** (candidates only, numpy): 64 sampled trajectories.
+   - track/speed noise by data quality
+   - turn rate = observed (decaying) + maneuver-scaled noise
+   - some samples follow the `nav_heading` turn
+   - vertical rate levels at the selected altitude
+
+   Built once per aircraft per cycle in an aircraft-centred plane and shared by every place (each place only shifts it), vectorized over time with closed forms. About 40 ms per cycle for 60 aircraft and 3 places.
+
+   **Arrivals** don't use the ensemble: `predicted_arrival` comes from `arrival_score` (§6.2) with ETA = (distance + 3 nm if not lined up) / ground speed. Its confidence is discounted while the aircraft is turning or maneuvering (≈0.8 at 1°/s, ≈0.14 at 3°/s) unless it's lined up with a runway, because the score reads the current heading. That's a generic kinematic factor, not pattern detection: the `arrival_score` field itself is unchanged.
+
+   Outputs:
+   - `p_success` per predicted fact
+   - `eta_p10/p50/p90`
+   - CPA, elevation angle, direction
+   - predicted-path polyline + uncertainty band
+
+### 7.4 Confidence and lead time
+```text
+confidence = p_success × q_data × q_horizon × q_corroborate   (clipped to [0, 1])
+  q_data        position age, MLAT/TIS-B, NIC/NAC, history length (<30 s ⇒ cap 0.5)
+  q_horizon     exp(−ETA/τ); τ ≈ 12 min cruise, ≈ 5 min below 5,000 ft AGL
+  q_corroborate claimed destination agrees/disagrees; arrival score; stability over recent updates
+```
+
+- **Hysteresis:** a predicted fact turns true at ≥ θ on 2 consecutive evaluations, and false after 3 evaluations below θ − 0.15.
+- Lead time and minimum confidence cascade global (Settings → Prediction, 10 min / 0.6 to start) → place (optional override) → filter. At the filter level they're ordinary conditions on the `*_eta_s` and `*_confidence` fields (e.g. "visible ETA ≥ 90 s" for a minimum lead), so they work the same in the live preview and the backtest.
+- `predicted_*` is true only while the hysteresis is on. An aircraft that's already visible/inside counts as predicted with ETA 0, so "predicted visible" filters don't drop it as it arrives.
+
+### 7.5 Testing against recorded flight data
+1. **Synthetic scenario tests:**
+   - straight overflight; near miss at 1.05·R; turns toward/away
+   - orbit; holding; straight-in and turn-to-final approaches
+   - polygon entry; racetrack inside a polygon
+   - stale/MLAT jitter; squawk glitch
+2. **Recorder** (on from Phase 1): compact hourly NDJSON.gz under `/data/recordings`, 14-day retention (configurable), scenarios can be pinned.
+3. **Replay harness** with an injected clock. Ground truth is taken from the recording's future. It reports:
+   - precision, recall, false alarms per day
+   - achieved lead time, ETA error, calibration (reliability, Brier)
+   - classifier agreement vs `dbFlags` (Phase 4)
+
+   Parameter sweeps; tune on some days, validate on others. The same engine powers the dashboard **backtest** (§10.3).
+
+   Implemented as `app/replay` and `python -m app.replay [--from 2026-10-01T08:00] [--days N] [--lead S] [--confidence C] [--json]`, using the places, filters and settings in `DATA_DIR`. Definitions:
+   - **event**: the aircraft becomes visible from a viewpoint (`visible_now`), enters an area (`inside_area`), or reaches an airport (within 2 nm and below 1,000 ft above the field, or on the ground within 3 nm). Onsets within 2 min of the last one are the same event (flicker). Events less than 60 s after first contact count as events but not as *predictable* ones (the recall denominator).
+   - **alarm**: `predicted_*` turns on while the event hasn't happened yet. It's true if the event follows within lead time + 2 min, otherwise a false alarm. Alarms still open when the recording ends are left out.
+   - **calibration**: confidence sampled every 30 s per pair before the event; outcome = event within the lead time. Reports Brier score and ECE over 10 bins.
+
+   First numbers (defaults): on 5.5 h of real night-time traffic around the home example, *visible*: predictor recall 0.93 (14/15), precision 0.88, median lead 153 s (p10 126 s), median ETA error 6 s, ECE 0.09; adsb-alarm baseline precision 0.54 with about 6× the false alarms. Median lead is under the 3 min target; tuning on more days is Phase 4.
+4. **Baseline to beat:** the simple heuristic used by [adsb-alarm](https://github.com/stfnhh/adsb-alarm): "track within 90° of the bearing to you and distance decreasing".
+5. **CI fixtures:** synthetic, or short attributed adsb.lol (ODbL) excerpts only.
+6. **Initial targets:**
+   - ≥90% recall for steady tracks with ≥3 min median lead
+   - ≤1 false predicted alert per place per day at defaults
+   - calibration error ≤0.1
+
+---
+
+## 8. Data model (SQLite)
 
 ```text
-settings(key PK, value_json)                       -- poll intervals, horizon, quiet hours, notifier config, tile URL…
-users(id PK, username, pw_hash, created_at)        -- one row; table exists so sessions have a FK
-sessions(id PK, user_id, created_at, expires_at, user_agent)
+settings(key PK, value_json)
+users(id PK, username, pw_hash, totp_secret_enc, recovery_codes_hash_json, created_at)
+sessions(id PK, user_id, created_at, expires_at, last_seen_at, ip, user_agent)
+audit_log(id PK, at, actor, action, detail_json)
 
-zones(
-  id PK, name, kind  CHECK(kind IN ('home','travel','adhoc')),
-  lat, lon, elevation_ft, radius_nm,
-  active_from, active_until,                       -- NULL = always (home); dates for travel; expiry for adhoc
-  enabled, created_from  ('map','geolocation'), created_at
-)
+places(id PK, name, role ('viewpoint','airport','area'), lat, lon, elevation_ft, radius_nm,
+       polygon_geojson, alt_floor_ft, alt_ceiling_ft, airport_icao, visibility_json,
+       active_from, active_until, schedule_json, defaults_json,   -- lead/confidence overrides
+       enabled, source ('manual','geolocation','airport_lookup'), created_at)
+runways(airport_ident, le_ident, he_ident, le_heading, he_heading, le_lat, le_lon, he_lat, he_lon, length_ft)
 
-rules(
-  id PK, name, enabled, priority ('normal','high','critical'),
-  match_json,          -- see below; validated by pydantic
-  trigger ('nearby','predicted','both'),
-  zone_ids_json,       -- NULL = all active zones
-  min_confidence, lead_min_s, lead_max_s,          -- NULL = use global defaults
-  cooldown_s, bypass_quiet_hours, created_at, updated_at
-)
+filters(id PK, name, enabled, mode ('live','shadow'), folder, sort_order,
+        current_version_id, created_at, updated_at)
+filter_versions(id PK, filter_id, version, definition_json,   -- the filter AST (below)
+                note, created_at)
+exclusions(id PK, scope ('global', filter_id), kind ('hex','reg','type','operator','callsign','expr'),
+           value, until, note, created_at)                     -- quick mutes from notifications/alerts
 
-alerts(                                            -- one row per (aircraft, rule, zone) episode
-  id PK, dedup_key UNIQUE-while-open,              -- hex|zone_id|rule_id
-  hex, callsign, reg, type_code, rule_id, zone_id,
-  state ('predicted','nearby','departed','expired'),
-  first_seen_at, predicted_at, entered_at, closest_at, ended_at,
-  best_confidence, eta_at_alert_s, cpa_nm, cpa_alt_ft, cpa_bearing_deg,
-  snapshot_json        -- enrichment + track excerpt at alert time (renders the history view)
-)
+military_overrides(key PK, is_military, note, created_at)
+classifier_settings(key PK, value_json)  -- signal weights, callsign/registration/operator lists
 
-notifications(id PK, alert_id FK, channel, sent_at, kind ('new','update','emergency'),
+alerts(id PK, dedup_key, hex, callsign, reg, type_code, filter_id, filter_version_id, place_id,
+       mode ('live','shadow'), state ('predicted','active','ended'),
+       first_seen_at, predicted_at, entered_at, closest_at, ended_at,
+       best_confidence, eta_at_alert_s, cpa_nm, cpa_alt_ft, cpa_bearing_deg, elevation_deg,
+       facts_json,          -- every field value at alert time (powers "why did this fire?")
+       feedback ('up','down', NULL))
+notifications(id PK, alert_id, channel, sent_at, kind ('new','update','emergency','digest'),
               payload_json, ok, error)
+suppression_state(key PK, last_notified_at, count_window)     -- only used by opt-in suppression settings
 
-cooldowns(dedup_key PK, last_notified_at, last_state)    -- survives restarts; no re-alert spam after a reboot
+sightings(hex, place_id, day, type_code, first_at, last_at, min_dist_nm, PK(hex, place_id, day))   -- history fields
 
 aircraft_db(icao PK, reg, type_code, flags, descr, year, own_op, db_version)
+plane_alert(icao PK, reg, operator, type, icao_type, cmpg, tag1, tag2, tag3, category, link, db_version)
+mil_ranges(start_hex, end_hex)
+type_stats(type_code PK, airframes, military_share)
+icao_types(type_code PK, description, wtc, engine_type, engine_count)  -- if available from tar1090-db
 airlines(icao PK, name, iata, callsign_tele, country)
 airports(ident PK, icao, iata, name, lat, lon, elevation_ft, type)
-runways(airport_ident, le_ident, he_ident, le_heading, he_heading, le_lat, le_lon, he_lat, he_lon)
-routes(callsign PK, origin, destination, source, fetched_at)     -- standing-data import + adsbdb hits
+routes(callsign PK, legs_json, plausible, source, fetched_at)
 cache(namespace, key, value_json, fetched_at, ttl_s, negative, PK(namespace,key))
-
-push_subscriptions(id PK, endpoint, keys_json, created_at)       -- phase 5, if web push is used
 source_status(name PK, last_ok_at, last_error, consecutive_failures, requests_today)
 ```
 
-**Rule `match_json`.** Conditions are AND-ed together, and values inside a list are OR-ed. Every field is optional.
-
-```json
-{
-  "type_codes": ["C17", "B74*", "A388"],     // glob on ICAO type designator
-  "registrations": ["N628TS"],
-  "operators": ["UAL", "Atlas*"],            // airline ICAO prefix OR owner/operator substring
-  "military": true,
-  "callsign_regex": "^(RCH|REACH)\\d+",
-  "squawks": ["7500", "7600", "7700"],
-  "categories": ["A7"],                      // emitter category, e.g. rotorcraft
-  "alt_ft":   {"min": null, "max": 10000},
-  "max_distance_nm": 3,                      // tighter than the zone radius
-  "min_elevation_deg": 15                    // "high enough above the horizon to see"
-}
-```
-
-A built-in "Emergency squawk" rule (7500/7600/7700, priority `critical`, bypasses quiet hours) ships enabled. It requires the squawk to be seen in **2 consecutive updates**, because single-frame squawk glitches are common.
-
-**In-memory track (per hex):** a ring buffer of the last ~40 positions (≈3–6 min), deduplicated on `pos_time`. It also holds the latest enrichment, derived kinematics (smoothed track, turn rate, along-track accel, vertical-rate trend), and the per-zone prediction result. ~4 MB for 1,000 aircraft.
-
-**Recordings (for testing, §4.6):** written to `/data/recordings/YYYY-MM-DD/HH.ndjson.gz`, one compact line per observation. Retention is 14 days, rolling. Pinned scenarios move to `/data/recordings/pinned/`. About 50–100 MB/day for a busy home zone.
-
 ---
 
-## 4. Prediction approach
+## 9. Notifications (Android)
 
-Goal: alert **"likely to pass within your zone in N minutes, and you can see it"** with enough lead time to step outside. Turning, orbiting and maneuvering aircraft must not cause false alarms.
+> **2026-10-31: Home Assistant removed; ntfy is the only notifier (§9.1, built).** The HA table below is kept as history: the episode, de-duplication, suppression, template and photo rules all carry over unchanged.
 
-### 4.1 Geometry
+Notifications go to `notify.mobile_app_<phone>` via HA's REST API. Delivery works off-network through HA's push relay. The cap is 500/day/device.
 
-- Prediction runs in a **local tangent plane (ENU) centered on each zone**. The equirectangular error inside 250 nm is under ~1%, far below the prediction uncertainty. Displayed distances and bearings use haversine and initial bearing.
-- **Closest point of approach** on a straight segment: with `p` = relative position and `v` = velocity, `t* = clamp(-p·v / |v|², 0, H)` and `d_cpa = |p + v·t*|`.
-- **Zone entry ETA** is the smallest root of `|p + v t| = R`, from a quadratic.
-- Curved paths are sampled at 10 s steps and checked segment by segment.
-- **Visibility.** The elevation angle from the zone center at CPA is `atan2(alt_ft − zone.elevation_ft, d_cpa_ft)`. The bearing at CPA becomes "passing 1.2 nm NW, ~45° up".
+| HA Android feature | Use |
+|---|---|
+| `channel` | Each filter picks an Android **notification channel** (e.g. "Aircraft – Military"); sound, vibration and importance are then set per channel in Android |
+| `importance: high`, `priority: high`, `ttl: 0` | Immediate delivery |
+| `tag` | **Update in place** (ETA changes, predicted → overhead) instead of stacking |
+| `chronometer` + `when` | Live ETA countdown. When the ETA moves by ≥60 s, the notification is re-sent in place with `alert_once` (silent): at most 3 updates per notification, ≥60 s apart, counted against the daily ceiling. Per-filter switch, on by default. |
+| `timeout` | Auto-dismiss after it has passed |
+| `clickAction` | Opens the PWA on that aircraft |
+| `actions` | "Mute this aircraft…", "Mute this type for this filter…", "Snooze filter 1 h", "👎 not interesting". Received via HA's WebSocket API (`mobile_app_notification_action`) and written as exclusions/feedback. |
+| `image` | Aircraft photo from plane-alert-db links (public URLs, no home data). Planespotters.net photos are shown only in the web UI, because their terms require a visible photographer credit and link next to the image, which a notification can't carry. |
+| `channel: alarm_stream` | Optional per filter: sounds even in Do Not Disturb |
 
-### 4.2 Kinematic state per aircraft
-
-Built from the ring buffer on every update:
-
-- **Track and speed:** the reported `track` and `gs`, cross-checked against positions over the last 30–60 s. On disagreement, positions win, because MLAT/TIS-B velocities are noisy.
-- **Turn rate:** a robust slope of unwrapped track over the last ~60 s. Its variability (stddev of turn rate over ~2 min) is the main "is it maneuvering?" signal.
-- **Autopilot intent (high-value signal).** Many ADS-B v2 aircraft broadcast `nav_heading` and `nav_altitude_mcp`. The live sample had them on airliners.
-  - If `nav_heading` differs from the current track by more than 5°, the aircraft **is about to turn to that heading**. Project a standard-rate turn (3°/s, or 1.5°/s above FL250) onto it, then fly straight.
-  - `nav_altitude_mcp` caps the vertical projection: the climb or descent levels off at the selected altitude.
-- **Vertical:** prefer `geom_rate`, fall back to `baro_rate`. Projected altitude is clamped at the selected altitude and at ground/field elevation.
-
-### 4.3 Two-stage prediction
-
-**Stage 1 — cheap gate (every aircraft, every update).** A straight-line projection plus the `nav_heading` turn, over horizon `H` (default 10 min). An aircraft becomes a *candidate* for a zone if `d_cpa < 3·R` and the entry ETA is within `H`. This rejects ~95% of traffic for almost no CPU.
-
-**Stage 2 — ensemble (candidates only).** Sample **K = 64 trajectories** per candidate with numpy:
-
-- initial track ~ N(track, σ_trk), where σ_trk depends on position source and accuracy fields (`nac_v`, MLAT)
-- ground speed ~ N(gs, σ_gs)
-- turn rate = observed turn rate decaying to 0 over ~60 s, plus random turn rate N(0, σ_turn)
-  - σ_turn scales with recent maneuvering and phase of flight: low and slow is more maneuverable than cruise
-  - ~10% of samples follow the `nav_heading` turn when one is present
-- vertical rate decays toward 0 as altitude reaches `nav_altitude_mcp`
-
-Outputs:
-
-- `p_enter`: the fraction of samples that enter the zone **and** satisfy the rule's altitude and elevation-angle constraints within `H`.
-- `eta_p10 / p50 / p90`, shown as "in 4–6 min".
-- `cpa_nm`, `cpa_alt_ft`, `cpa_bearing`, `elevation_deg` from the median trajectory.
-- A **predicted-path polyline** (median, plus a p10–p90 band) for the map.
-
-Cost: ~20 candidates × 64 samples × 60 steps per update, which is trivial in numpy.
-
-### 4.4 Confidence score
+**Message content is a per-filter template** built from any fields. The default looks like:
 
 ```text
-confidence = p_enter
-           × q_data         # 0.6–1.0: pos age, MLAT/TIS-B penalty, NIC/NAC, track-history length (<30 s ⇒ capped at 0.5)
-           × q_horizon      # exp(−ETA/τ), τ ≈ 12 min cruise, ≈ 5 min below 5,000 ft (GA / helis wander)
-           × q_corroborate  # 0.7–1.3, see below; result clipped to [0,1]
+✈ C-17A Globemaster III · visible from Home in ~4 min   [countdown]
+RCH452 · USAF (military: DB flag, plane-alert Mil/USAF, type C17)
+Passes 1.2 nm NW at ~3,500 ft AGL, ~45° up, heading SE · 280 kt, descending
+Route: KDOV → KSLN? (implausible) · Arrival score KSLN 0.82 · confidence 81%
+Filter: Military over home
 ```
 
-**Corroboration** (Phase 4) can raise or lower the score:
+**De-duplication:**
 
-- **Known destination (plausible route only).** If the great circle to the destination, or the standard arrival geometry, passes through the zone, multiply by 1.2. If the destination lies in the opposite direction, multiply by 0.8.
-- **Descent toward a nearby airport.** The aircraft is descending (< −500 fpm), below ~12,000 ft, and heading within ±30° of an airport within ~40 nm. Run a second projection along the extended runway centerline of the runway best aligned with the arrival. If the zone lies under the approach path, multiply by 1.25; if the airport is reached before the zone, multiply by 0.8. This is the main way to catch "it will turn onto final over my house" cases that straight-line projection misses.
-- **Climbing out from a nearby airport.** The mirror case for departures, using the runway heading.
+- **Always on (not a filter):** one notification per *aircraft × filter × place episode*, updated in place. Without this, every 10 s poll would re-notify.
+  - An episode ends when the condition has been false for 2 min, or the aircraft has been lost for 5 min.
+  - If it matches again later, that's a **new episode and a new notification**.
+  - Multiple filters matching one aircraft at once → one combined notification.
+- **Optional (all off by default), per filter or global:**
+  - "don't notify about the same aircraft again within X minutes"
+  - max notifications per day
+  - global rate cap with digest
+  - quiet hours (with per-filter bypass)
+- **Safety ceiling:** a configurable ceiling (default 400/day) keeps you under HA's 500/day limit. If it's ever reached, the dashboard shows a warning.
 
-**Persistence / hysteresis.** A predicted alert fires only when `confidence ≥ θ` (default 0.6, configurable per rule) on **2 consecutive evaluations**. Once fired, it isn't cancelled until confidence stays below θ − 0.15 for 3 evaluations. This stops flicker on aircraft hovering around the threshold.
+**Backup channel:** dropped in favour of ntfy (below).
 
-### 4.5 Lead-time policy
+### 9.1 ntfy (built 2026-10-31; setup guide in NTFY.md)
 
-- `lead_max` (default 10 min): don't alert earlier than this, because predictions are too uncertain.
-- `lead_min` (default 90 s): if the predicted ETA is already shorter than this, it is effectively "nearby now" and goes through the nearby path.
-- The alert fires at the **first** evaluation where `ETA_p50 ≤ lead_max` and the confidence and persistence conditions hold. For a typical airliner at 250–300 kt on descent, that gives ~4–8 minutes of warning.
+You'll run **ntfy** in its own container on the same server. The app gets an `NtfyNotifier` behind the same `Notifier` interface, so everything above (episodes, combined notifications, opt-in suppression, shadow mode, backtest) is unchanged.
 
-### 4.6 Testing against recorded flight data
+**Setup:**
+- `binwiederhier/ntfy` with `auth-file`, `auth-default-access: deny-all`, `cache-file` (missed messages survive restarts), `attachment-cache-dir`, `base-url` = its public hostname, `behind-proxy: true`.
+- Its own Cloudflare Tunnel hostname (e.g. `ntfy.example.com`), so the phone receives notifications away from home. The app publishes to that URL, or to `http://ntfy` if both stacks share a Docker network. ntfy keeps WebSockets alive every 45 s, under Cloudflare's ~100 s idle cut-off.
+- The app publishes with a write-only token; the phone subscribes as a read-only user. One private topic with a random name.
+- Android app: enable **instant delivery** (a foreground service). Self-hosted servers don't use Firebase, so this is how messages arrive immediately; battery use is reported as negligible.
 
-1. **Unit tests on synthetic tracks**, generated in code and deterministic:
-   - straight overflight, near miss at 1.05·R, constant-rate turn into or away from the zone
-   - 360° orbit (police or news helicopter), holding pattern
-   - ILS approach with a turn onto final over the zone, go-around
-   - stale and MLAT-jittered positions, squawk glitch
+**Mapping from the HA design:**
 
-   Each asserts alert/no-alert and an ETA within tolerance.
-2. **Recorder.** On from Phase 1, so real data from *your* area builds up before the predictor exists. It stores normalized observations as hourly NDJSON.gz files (§3).
-3. **Replay harness** (`python -m app.replay`):
-   - Streams a recording through the real pipeline with an **injected clock**. No wall-clock calls anywhere in the engine.
-   - Ground truth comes from the future of the same recording: did the aircraft actually enter the zone (meeting the rule's altitude and elevation constraints), and when?
-   - Reports:
-     - **Precision and recall** of predicted alerts per zone/rule
-     - **False alarms per day**
-     - **Lead time** actually achieved (distribution)
-     - **ETA error** (p50/p90)
-     - **Calibration** (reliability curve and Brier score: do 70% predictions come true ~70% of the time?)
-   - Supports parameter sweeps (θ, σ_turn, τ, H). Tune on one set of days and validate on different days to avoid overfitting.
-4. **Regression fixtures.** A few curated, small (<1 MB) replay scenarios live in `tests/fixtures/replay/`, each with an expected-alerts file, and run in CI. These are short excerpts of ODbL / adsb.fi-sourced data used for personal testing. The repo should stay private, or the fixtures should be swapped for synthetic or own-receiver data before publishing.
-5. **Optional bulk history.** adsb.lol published full daily dumps on GitHub (`adsblol/globe_history_2025`, archived Jan 2026; whether a 2026 successor exists still needs checking). They are useful for testing zones other than home without waiting weeks for recordings.
+| ntfy feature | Use |
+|---|---|
+| Priority 1–5 | Filter priority low/normal/high/urgent → 2/3/4/5. ntfy's Android app has a channel per priority, so sound, vibration and "override Do Not Disturb" are set per priority level in Android (replaces HA channels and `alarm_stream`; the UI no longer shows them). |
+| Title, message, tags | Same templates; tags add emoji (✈️, 🪖 for military). |
+| Click | Opens the PWA on that aircraft. |
+| Attach (URL) | plane-alert-db photo link (no home data). |
+| Actions | "Open" (view), "Mute 1 day" and "Not useful" (http). The phone calls back the app with a **signed, single-purpose token** per notification (expires after 24 h), because it has no web session. That endpoint accepts only those tokens, is rate limited, and can only mute or rate that alert. |
+| Sequence ID (ntfy ≥ 2.16) | **Update in place** per aircraft (`aircraft-<hex>`): ETA changes and combined notifications replace the previous one silently. |
+| Countdown | ntfy has no live chronometer, so the message starts with the absolute ETA ("ETA 14:32") and the notification is replaced in place when it shifts (same rules as before: ≥60 s shift, ≤3 updates). |
 
-**Initial acceptance targets**, revisited after the first baseline: on replayed data for the home zone,
-
-- recall ≥ 90% for aircraft that fly a steady track into the zone, with ≥ 3 min median lead
-- **≤ 1 false predicted alert per zone per day** at default settings
-- calibration error ≤ 0.1
+**Limits:** a self-hosted ntfy has no 500/day cap, so the safety ceiling becomes a per-notifier setting (still on by default as a runaway guard). Nothing sent to ntfy contains home coordinates.
 
 ---
 
-## 5. Notifications
+## 10. The filter dashboard (centerpiece)
 
-### 5.1 Options evaluated
+The design goal is that tuning "what reaches my phone" is fast, visual, safe to experiment with, and explainable.
 
-| | **Home Assistant Companion app** (`notify.mobile_app_<phone>` via HA REST API) | **Self-hosted ntfy** | **Web Push from the PWA** (VAPID) |
-|---|---|---|---|
-| New infrastructure | None. Uses your HA and a long-lived access token. | One more container (~20 MB RAM) and the ntfy app | None (built into the app); needs HTTPS |
-| Delivery when you're away from home | **Yes, without exposing anything.** Pushes go through HA's push relay to FCM/APNs. | iOS: your server pokes ntfy.sh (`upstream-base-url`, topic + message ID only), then the app **fetches the message from your server**, so your server must be reachable from the phone. Android: instant delivery holds a connection to your server (same requirement) unless it uses ntfy.sh's FCM. | Yes, via the browser vendor's push service. iOS 16.4+ only for an **installed** PWA. Reliability on iOS is weaker. |
-| Limits | **500 pushes per device per day** (resets at midnight UTC). Critical alerts don't count. | None self-hosted (ntfy.sh upstream has its own limits for the iOS poke) | Vendor-side, generous |
-| Rich features | `tag` (**replace the same notification in place**, e.g. update the ETA instead of stacking), `group`, Android channels, iOS **critical alerts** (bypass silent mode), actionable buttons, image, `url` to open the PWA | Priority 1–5, tags/emoji, click URL, action buttons, attachments | Title, body, icon, click URL; limited actions on iOS |
-| Extras | Can also trigger HA automations (e.g. flash a light when a C-17 is 2 min out) | Works without HA; nice desktop notifications | No other app needed |
+### 10.1 Filter model
 
-### 5.2 Recommendation
+A filter is a **JSON expression tree**: nested groups **ALL / ANY / NONE** of conditions `field op value`. Each filter also has:
 
-**Home Assistant notify as the primary channel**, behind a `Notifier` interface. It needs no new container. It works off-network without exposing the server. Its `tag` field fits the de-duplication model exactly. Critical alerts are a good match for emergency squawks.
+- **places**: each place-related condition names its place ("Distance from Home < 10 nm", "Inside area Smoky Hill"), so one filter can combine several places. A *display place* sets the distance and direction used in notification text.
+- **timing**: predicted facts (Phase 3) are fields like any other (`predicted_visible`, ETA, confidence), so "now" vs "soon" is expressed with conditions
+- **notification settings**: channel, priority, template, optional suppression
 
-**ntfy is the secondary plug-in** (Phase 2). Use it if you'd rather not depend on HA for this, or want desktop notifications.
+Global and per-filter **exclusions** (quick mutes) apply on top.
 
-**Web Push** is Phase 5 and optional.
+**One engine** compiles the tree into fast Python predicates. It is used identically for:
 
-### 5.3 Message content
+- live alerting
+- the live preview
+- the backtest over recordings
 
-```text
-Title: ✈ C-17A Globemaster III · in ~4 min
-Body:  RCH452 (USAF) will pass 1.2 nm NW of Home at ~3,500 ft, about 45° up, heading SE.
-       Now 18 nm NW · 280 kt · descending · confidence 82%
-       Rule: Military
-Tap  → opens PWA map focused on that aircraft
-```
+Preview and backtest therefore always agree with what would actually notify.
 
-The "nearby now" variant leads with distance and direction. The emergency variant leads with the squawk meaning: "7700 general emergency".
+**Field catalog** (each with type, units, help text and autocomplete):
 
-### 5.4 Cooldowns and de-duplication
+| Group | Fields |
+|---|---|
+| Identity | hex, registration, callsign, flight number, airline (from callsign), owner/operator |
+| Aircraft | ICAO type, type description, manufacturer, emitter category, wake class, engine type/count (if available), year built |
+| Classification | military score + each military signal, government, police, plane-alert CMPG / category / tags, LADD, PIA |
+| State | altitude (baro/geo, MSL/AGL), ground speed, vertical rate, track, squawk, emergency, on-ground, position source (ADS-B/MLAT/TIS-B), data age |
+| Relative to place | distance, bearing (or compass sector), elevation angle, slant range, `visible_now`, `inside_now`, `seconds_inside`, `arrival_score` |
+| Predicted | `predicted_visible` / `predicted_entry` / `predicted_arrival`, ETA, CPA distance, CPA altitude, confidence |
+| Route | origin, destination, legs, route source, route plausible |
+| History | times seen at this place in the last N days, first-ever sighting, last seen. This enables JetTip-style **"rare visitor"** filters without any built-in definition of "rare". |
+| Time | local time of day, day of week, date range, day/night |
 
-- **Dedup key** = `hex | zone | rule`. One open `alerts` row per key acts as a state machine: `predicted → nearby → departed`, or `predicted → expired` if the aircraft turns away.
-- **One notification per episode** by default.
-  - Moving to `nearby` updates the *same* notification via HA `tag` = dedup key, so it doesn't stack a new one. This update can be turned off per rule.
-  - An ETA change of more than 2 min also updates in place.
-- **Cooldown:** after an episode ends, the same key can't notify again for `cooldown_s` (default 30 min). It is stored in `cooldowns`, so a container restart doesn't re-alert.
-- **Multi-rule collapse:** if one aircraft matches several rules, send one notification listing all of them, at the highest priority.
-- **Global rate cap:** at most 6 notifications per 10 min. Beyond that, send a digest ("+4 more watched aircraft nearby"). This keeps well under HA's 500/day.
-- **Quiet hours** (optional) suppress everything except rules with `bypass_quiet_hours`, which emergency squawks have by default.
+*Built (Phase 4):* a sighting is a local day on which the aircraft came within a place's **watch radius** (`radius_nm`). Fields, all per place: `visits_prev_30d`, `days_since_visit`, `first_visit` and `type_visits_prev_30d` (days any aircraft of the type was there). They count only days **before today**, so being here now doesn't change them, and replays and backtests see only the history before the replayed day. History is kept 180 days. Today's sightings stay in memory and are flushed every minute; past days load lazily per aircraft and type into bounded caches. Day/night: `sun_elevation_deg`, `daylight` (sun above −0.833°) and `dark` (below −6°, after civil twilight), per place, from the NOAA solar equations.
 
----
+**Operators:** `=`, `≠`, `in list`, `glob`, `regex` (validated), `<`, `≤`, `between`, `exists`, `is true/false`.
 
-## 6. Web UI
+### 10.1a Following specific aircraft anywhere (built 2026-10-31)
 
-Svelte SPA, installable as a PWA, responsive from phone to desktop.
+Any enabled filter condition **"registration is / is any of …"** or **"hex is / is any of …"** (not inside a "none of" group) puts those aircraft on a **watchlist**. The poller looks them up wherever they are, using the aggregators' per-aircraft endpoints (`/v2/hex/{a,b,…}` on adsb.fi with adsb.lol as failover): one request per minute covers up to 40 aircraft, sharing the same budget and circuit breaker as area polls. Registrations resolve to hex through tar1090-db; unknown ones are looked up by registration every 5 minutes until found.
 
-1. **Map** (default screen)
-   - Zones as circles; aircraft icons rotated by track and colored by status (matching / predicted / other).
-   - **Predicted paths:** median polyline plus a translucent uncertainty band, opacity tied to confidence.
-   - Tapping an aircraft shows a details sheet: type, registration, operator, route (with a plausibility badge), altitude, speed, ETA, CPA, confidence, matched rules.
-   - Live via SSE. Filter toggle: "matching only / all in zone".
-2. **Alerts**: a filterable history (rule, zone, date, type). Each entry shows a snapshot mini-map of the track at alert time and the notifications sent.
-3. **Zones**: list plus a map editor (drag the center, radius slider).
-   - Home zone, plus travel zones with a date range.
-   - **"Use my location"**: browser geolocation creates an ad-hoc zone with an expiry (default 24 h), one tap.
-4. **Rules**: form builder for every match field.
-   - **"Test now"** lists which aircraft currently in reach would match, so you can see a rule work without waiting.
-   - Enable/disable toggle, priority, and per-rule threshold and lead-time overrides.
-5. **Settings**
-   - Source status: requests/day, last error, circuit-breaker state.
-   - Notifier config with a **"Send test notification"** button.
-   - Quiet hours, horizon and defaults.
-   - DB versions with "refresh now".
-   - Required attribution: adsb.fi link, ODbL notice for adsb.lol, OSM tiles.
+- Such a filter needs no place condition: it alerts once per appearance (episode), anywhere the community feeds see it. A new appearance after it's been gone a few minutes is a new alert.
+- New generic facts: `nearest_airport`, `nearest_airport_nm` and `near_description` ("26 nm SW of Dover AFB (KDOV)", "at …" within 3 nm), from the large/medium airports in OurAirports. More than 100 nm from the display place, the default title says where it is instead of a distance from home.
+- UI: a "Specific aircraft, anywhere" template, registration autocomplete from the aircraft database, a "Following anywhere" panel in the editor (flying or not, where), and "Follow anywhere" on any aircraft page.
+- **Limits:** only while the aircraft transmits and is within some feeder's range (not over oceans); aircraft with ADS-B off, and those using rotating privacy addresses (FAA PIA), can't be followed. Military aircraft often fly with ADS-B off. FR24 (planned) could fill gaps for civil aircraft.
 
----
+### 10.1b Take-off and landing notifications (built 2026-10-31)
 
-## 7. Phased build order
+Each filter's notification settings have **"Notify me when a matching aircraft… starts matching / takes off / lands"** (`on_match`, `on_takeoff`, `on_landing`; defaults on/off/off, and on/on/on for the "Specific aircraft, anywhere" template and "Follow anywhere").
 
-Each phase ends with something usable, tests passing, and a working container.
+Detection (`app/tracks/events.py`, shared by live alerting and the replay/backtest):
+- **Observed:** the aircraft reports on-ground → airborne (take-off) or airborne → on-ground (landing), credited to the airfield within 3 nm. Needs receivers that hear it on the ground.
+- **Inferred take-off:** first heard climbing (≥300 ft/min) below 2,500 ft above an airfield within 5 nm.
+- **Inferred landing:** last heard below 1,000 ft above an airfield within 3 nm, not climbing, then no position for 150 s (longer than the 60 s lookup interval for followed aircraft, shorter than the 180 s track expiry). Shown as "(probably)".
+- Airfields: all large/medium/small airports, plus heliports for rotorcraft only (so a helipad next to a runway doesn't take the credit). ~70k in a 0.5° grid, ~26 MB.
+- One take-off per flight and one landing per flight (no repeats until the opposite event).
 
-### Phase 0 — Skeleton (small)
-- Repo layout, `pyproject.toml` (uv), ruff/mypy/pytest, Svelte+Vite scaffold, Dockerfile (multi-stage, non-root), `compose.yaml` with `mem_limit` and a healthcheck, `/data` volume.
-- SQLite with migrations, config via env plus a settings table.
-- Built-in auth (login page, session cookie, first-run password setup).
-- CI (GitHub Actions): lint, typecheck and tests for both backend and frontend, plus a Docker build.
+Notifications: a take-off in the same cycle as a new match is announced in that one notification ("🛫 N628TS GULFSTREAM G650 took off from Salina Regional Airport (KSLN)"). Later events go to the filters whose episode for that aircraft is active, as one combined notification that replaces the previous one. Shadow mode, "notifications off", quiet hours and the daily ceiling apply; repeat suppression and daily caps don't (they're about new matches). The `{event}` placeholder is available in custom titles. The backtest counts them the same way.
 
-### Phase 1 — MVP: "watched type nearby" alerts ⭐
-- adsb.fi source, adsb.lol failover, normalization, circuit breakers, token-bucket rate limiting.
-- Query planner for the **home zone only**, inner tier only.
-- tar1090-db import, enriching type, registration, military flag and owner.
-- Rule engine for `type_codes`, `registrations`, `military`, `alt_ft`, `max_distance_nm`. Trigger: **nearby**.
-- Alert state machine, dedup, cooldown persisted across restarts.
-- **Home Assistant notifier** with `tag`-based updates and a test button.
-- Minimal UI: login, rules list/editor (those fields), alert history list, a simple aircraft table.
-- **Recorder turned on**, so replay data starts accumulating now.
-- ✅ Done when: a matching aircraft within N nm triggers exactly one phone notification with type, distance, direction, altitude, and doesn't repeat during the cooldown.
+Generic filter fields: `took_off_recently`, `landed_recently` (last 10 min), `takeoff_airport`, `landing_airport`. For example, "anything that took off from KSLN in the last 10 minutes" works without a watchlist.
 
-### Phase 2 — Full zones, rules, map, PWA
-- Travel zones with date windows, ad-hoc "use my location" zones, multi-zone planning with circle merging.
-- All rule fields: operators via airlines/callsign, callsign regex, squawks with 2-update persistence, categories, elevation angle. Built-in emergency rule. Quiet hours, multi-rule collapse, global rate cap.
-- Map view with SSE, aircraft details sheet, alert history with snapshots.
-- PWA manifest, icons, service worker.
-- ntfy notifier plug-in.
+**Later (proposed): an FR24-style "simple mode"** for the builder: a flat panel of the common filters (registration, callsign, type, airline/operator, altitude and speed ranges, origin/destination, category, military), each a single row, compiling to the same expression tree. The full builder stays for complex filters.
 
-### Phase 3 — Prediction core
-- Track ring buffers and derived kinematics (turn rate, `nav_heading`/`nav_altitude_mcp` intent).
-- Two-tier polling (outer circle), Stage 1 gate, Stage 2 ensemble, confidence score (without corroboration), hysteresis, lead-time policy.
-- `predicted` trigger in the rule engine; predicted paths on the map; ETA and confidence in notifications.
-- **Synthetic scenario tests, replay harness, metrics report.** Tune defaults on the Phase 1–2 recordings and commit the baseline metrics.
+### 10.2 Builder and live preview
+- **Visual builder:** add/remove/reorder conditions, nest groups, toggle a condition off without deleting it.
+  - Value pickers with autocomplete: type codes with descriptions, operators seen recently, plane-alert categories, places.
+  - A **plain-English summary** updates as you edit, e.g. "Military (score ≥ 0.6) AND predicted visible from Home within 10 min, 06:00–23:00".
+- **Live preview:** aircraft currently in reach that match, updated via SSE, and highlighted on a mini-map.
+- **Funnel view:** for each condition, how many aircraft remain, e.g. "34 in reach → 3 military → 2 below 15,000 ft → 1 predicted visible". It shows exactly which condition is too strict or too loose.
+- **"Why not?"**: pick any aircraft and see which condition rejected it.
+- **Advanced:** a JSON editor with schema validation, for copy/paste and power edits.
 
-### Phase 4 — Route and airport signals
-- Route lookups: standing-data bulk import, adsbdb fallback, plausibility check, cache. Route display in the UI.
-- OurAirports and runways import; descent-to-airport and departure projections; corroboration factor.
-- Re-run the replay metrics and keep the signals only if they improve recall without raising false alarms.
+### 10.3 Backtest (what-if)
+- Run the draft filter over the last 1/3/7/14 days of recordings and see:
+  - notifications per day (bar chart)
+  - the list of would-be alerts (time, aircraft, mini-map, facts)
+  - the **diff against the saved version**: alerts added (+) and removed (−)
+- Tune sliders (lead time, confidence, elevation angle, slant range, suppression) and re-run.
+- Runs in a background task with progress reporting and is capped by date range, so it never stalls live alerting.
 
-### Phase 5 — Extras
-- Local RTL-SDR source (readsb `aircraft.json`), with merge priority over aggregators.
-- Optional OpenSky source (OAuth2, credit-aware scheduling).
-- Optional Web Push; HA automation hooks; backup/export of rules and zones; retention jobs.
+Built (Phase 3): "What if?" on the filter editor runs the draft (and the saved version, when the draft differs) over the last 1/3/7/14 days: daily alerts and notifications, totals, and the aircraft added (+) or removed (−). One backtest runs at a time as an asyncio task that yields after every batch; the predictor runs only if the filter uses prediction fields. Episodes, exclusions and the filter's opt-in suppression use the live code (`suppression_reason` is shared). It uses today's places, mutes, settings and cached routes, and global cross-filter repeat suppression is not modelled because other filters aren't replayed. Not built yet: per-alert mini-map/facts and in-panel sliders (edit the draft and re-run instead).
+
+### 10.4 Safe changes
+- **Shadow mode:** a filter evaluates live and logs alerts to history, marked "shadow", but doesn't push. Promote it to live when happy.
+- **Versions:** every save creates a version, with diff and one-click revert. Alerts record which version fired them.
+- **Import/export** filters as JSON (also how people will share filters once the repo is public).
+
+### 10.5 Tuning from real alerts
+- On any alert (in the app or via notification buttons):
+  - "Mute this aircraft (1 h / 1 day / forever)"
+  - "Exclude this type / operator / callsign pattern from this filter"
+  - "Make a new filter from this aircraft"
+  - "👍 / 👎"
+- **Alert history** with "why did this fire?" (the condition tree evaluated against stored facts) and per-filter stats: notifications per day, 👍/👎 ratio.
+
+### 10.6 Other screens
+- **Map:** places (circles, airports with runways, polygons); aircraft colored by matched filter; predicted paths with uncertainty bands; details sheet (all fields, military reasons, route, photo).
+- **Places:** home, airports by ICAO, area polygons (draw or paste), travel viewpoints with dates, "Use my location", visibility settings.
+- **Military review:** "possible military" list, overrides, signal weights and lists.
+- **Settings:** sources status, HA connection test and channel list, defaults (global lead/confidence/visibility), safety ceiling, 2FA, data refresh, attribution (adsb.fi link, adsb.lol ODbL, plane-alert-db ODbL, OpenStreetMap, OurAirports).
+- Works on phone (stacked cards, bottom sheets) and desktop (side-by-side builder and preview).
 
 ---
 
-## 8. Proposed repository layout
+## 11. Existing projects and what we can reuse
 
-```text
-backend/
-  app/
-    main.py                # FastAPI app + lifespan (starts poller / evaluator tasks)
-    config.py  clock.py    # settings; injectable clock (real / replay)
-    auth.py
-    db/        (schema.sql, migrations/, repo.py)
-    sources/   (base.py, adsbfi.py, adsblol.py, opensky.py, readsb.py)
-    ingest/    (planner.py, poller.py, ratelimit.py, normalize.py, merge.py, recorder.py)
-    enrich/    (aircraft_db.py, airlines.py, routes.py, airports.py, cache.py)
-    tracks/    (store.py, kinematics.py)
-    predict/   (geo.py, cpa.py, ensemble.py, confidence.py, airports_signal.py)
-    rules/     (models.py, engine.py)
-    alerts/    (manager.py, format.py)
-    notify/    (base.py, homeassistant.py, ntfy.py, webpush.py)
-    api/       (zones.py, rules.py, alerts.py, live_sse.py, settings.py)
-    replay/    (__main__.py, groundtruth.py, metrics.py)
-  tests/  (unit/, scenarios/, fixtures/replay/)
-frontend/  (Svelte + Vite; src/routes: Map, Alerts, Zones, Rules, Settings)
-docker/Dockerfile
-compose.yaml
-docs/PLAN.md
-CLAUDE.md
-```
+| Project | What it is | Reuse |
+|---|---|---|
+| [plane-alert-db](https://github.com/sdr-enthusiasts/plane-alert-db) | ~17k curated "interesting" aircraft, CMPG + 54 categories + tags (ODbL/DbCL) | **Use as data** (runtime download): military signal and filter fields |
+| [tar1090-db](https://github.com/wiedehopf/tar1090-db) | Aircraft DB + military address ranges | **Use as data** (already planned) |
+| adsb.im routeset API | Callsign → route with plausibility | **Use** as the primary route lookup |
+| [adsb-monitor](https://github.com/jchisholm59/adsb-monitor) (MIT, Node) | Closest in spirit: adsb.lol/adsb.fi area polling or local receiver, HA webhook/ntfy alerts, military via tar1090-db + address blocks + callsigns, approach detection (within 20 nm, below 6,000 ft, descending) | **Reference** for heuristics and lists (MIT: borrow with attribution). Not forked: it's built around a HA Lovelace card, with no prediction or filter engine. |
+| [aerodrome](https://github.com/preston-peterson/aerodrome) (MIT, Python/FastAPI/SQLite) | Same stack. Watchlists, military highlighting (address ranges + callsign prefixes + lists), ntfy | **Reference** for callsign-prefix lists and dashboard ideas. Local receiver only; PRs disabled. |
+| [adsb-aircraft-tracker](https://github.com/hook-365/adsb-aircraft-tracker) (MIT, HA custom component) | Military/low-altitude/emergency alerts inside HA | **Reference only.** Needs a local feeder; no prediction. |
+| [adsb-alarm](https://github.com/stfnhh/adsb-alarm) (MIT, Go) | Polls adsb.fi; webhook when an aircraft of chosen categories is inbound | **Replay baseline** for our predictor |
+| [plane-notify](https://github.com/Jxck-S/plane-notify) (GPL-3.0, Python) | Takeoff/landing notifications for specific aircraft | Ideas only. GPL: no code copied. |
+| [docker-planefence](https://github.com/sdr-enthusiasts/docker-planefence) / Plane-Alert | Overhead log + watchlist for local receivers | Ideas only; local receiver required |
+| [ha_adsb_lol](https://github.com/vingerha/ha_adsb_lol) | HA integration for adsb.lol | Archived Jan 2026; not usable |
+
+**Conclusion:** nothing existing combines public-API polling, prediction with confidence, and a full filter dashboard. We build our own core and reuse the **data sets** (plane-alert-db, tar1090-db, OurAirports, standing-data) and the adsb.im route API. We borrow lists and heuristics only from MIT projects, with attribution in `NOTICE`.
 
 ---
 
-## 9. Risks and mitigations
+## 12. Phased build order
+
+Each phase ends usable, with tests passing and the container working. **The filter engine and builder come early**, since tuning filters is the core activity.
+
+### Phase 0 — Skeleton and secure access
+- Repo layout; uv/ruff/mypy/pytest; Svelte+Vite+vitest scaffold; Dockerfile; `compose.yaml` with app + `cloudflared` + `.env.example`.
+- SQLite migrations; auth with TOTP, lockout, CSRF, headers; setup wizard (password, 2FA, home viewpoint, HA URL/token with connection test and notify-service picker).
+- CI: lint, typecheck, tests, image build, gitleaks.
+- Deployment doc: Cloudflare Tunnel public hostname, HA token.
+
+### Phase 1 — MVP: filters → phone ⭐ (repo goes public after this)
+- adsb.fi + adsb.lol failover, query planner, rate limiter, circuit breakers.
+- tar1090-db, `ranges.json` and **plane-alert-db** import; **military classifier v1** with reasons.
+- **Filter engine** (expression tree, fields: identity, aircraft, classification, state, distance/bearing/elevation/visible-now for viewpoints); exclusions; emergency-squawk starter filter (editable, like everything else).
+- **Builder v1:** visual groups and conditions, autocomplete, plain-English summary, **live preview + funnel + "why not?"**.
+- HA notifier: channel, tag, clickAction, template, test button. Episode de-duplication; optional suppression settings (off).
+- Alert history with "why did this fire?"; recorder on; coverage report.
+- ✅ Done when you can build e.g. "military visible from home" in the dashboard, see it in the live preview, and get exactly one updating notification per aircraft episode.
+- Then: README, MIT license, `NOTICE` attributions, history check with gitleaks → **flip the repo public**.
+
+### Phase 2 — Places, routes, map, safe tuning
+- Airport places (OurAirports + runways), area polygons (draw/paste), travel viewpoints, "Use my location".
+- Route lookups (adsb.im → standing-data → adsbdb) with plausibility; `arrival_score`; area facts. All as filter fields.
+- Map view with SSE and details sheet; PWA install.
+- **Shadow mode, versions with diff and revert, import/export.**
+- Notification action buttons (mute/exclude/snooze/👎) via HA WebSocket; per-filter channels and alarm stream; optional photos.
+- Military review page.
+
+### Phase 3 — Prediction + backtest
+- Ring buffers, kinematics, autopilot intent; two-tier polling.
+- Gate + ensemble; `predicted_*` facts, ETA, confidence, hysteresis; runway-approach projection for high arrival scores.
+- Predicted paths on the map; countdown notifications.
+- Synthetic scenarios, replay harness and metrics vs the adsb-alarm baseline.
+- **Dashboard backtest (what-if)** with daily counts and diff vs the saved version.
+- *Status: done* (see §7.3–7.5, §9 and §10.3 for what was built and what's deferred).
+
+### Phase 4 — History and refinement
+- Sightings history fields ("rare visitor" filters); 👍/👎 stats per filter. *Done.*
+- FAA airspace search for area polygons; day/night field. *Done:* the area form searches FAA ADDS special use airspace by name or near a point (on demand, cached 7 days), merges stacked sectors with the same outline (R-3601A + B → surface to FL230), converts AGL limits with the ground elevation, and pre-fills active hours when the published times are a single window (time zone from the FAA GMT offset and DST flag).
+- Tune confidence factors on replay data; classifier-list updates from the review loop.
+
+### Phase 5 — Sources, ntfy, extras (re-planned v4, see SOURCES.md)
+- ntfy notifier (§9.1) and the military review page's list suggestions from your overrides.
+- Multi-source merge + Sources report; FlyItalyADSB and OpenSky; local receiver; FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
+- Dropped: Web Push backup channel (ntfy instead) and GHCR image releases (your decision).
+- Backup/restore of places and filters. *Backup/restore done:* Settings → Backup downloads one JSON file (places, filters, mutes, settings, military overrides; never credentials). Restore merges, remaps place ids inside filters and mutes, skips places and filters that already exist, and keeps this install's home.
+
+---
+
+## 13. Public repo plan (decided)
+
+**Private until Phase 1 works, then public under MIT.**
+
+- **Never committed:** home coordinates, domain, HA URL/token, real places/filters. These live in `.env` and `/data`. The repo ships generic examples. This plan names Salina/KSLN at city level only; drop those lines before going public if you prefer.
+- **No redistributed data:** fixtures are synthetic or attributed adsb.lol (ODbL) excerpts. All other datasets are downloaded at runtime; adsb.fi, adsbdb and paid-source data are never committed.
+- Each user runs their own instance with their own API usage. The README states each source's terms.
+- gitleaks in CI from Phase 0, so history is clean when it flips.
+- `NOTICE` file for MIT-licensed lists and heuristics borrowed from other projects, and dataset attributions.
+- Since it'll be public under your name, do a quick check that your employment agreement doesn't claim side projects.
+
+---
+
+## 14. Risks and mitigations
 
 | Risk | Mitigation |
 |---|---|
-| A free API changes terms, adds keys or blocks us (airplanes.live already did) | Pluggable sources with failover. Polite polling at ≤50% of published limits. Feeding a receiver is the long-term fix. |
-| Coverage gaps at low altitude near home | Phase 5 RTL-SDR source. The UI shows the position source so gaps are visible. |
-| Wrong routes from callsign databases | Plausibility check; implausible routes never influence predictions. |
-| False alarms from maneuvering aircraft | Ensemble probability, maneuver-scaled σ_turn, persistence/hysteresis, metrics-driven tuning on replay data. |
-| Notification spam | Episode state machine, `tag`-based updates, cooldowns persisted across restarts, global rate cap, digest. |
-| Resource creep on a shared server | Single process, SQLite, `mem_limit`, adaptive poll slow-down, bounded ring buffers and retention. |
+| Free API changes terms or blocks us | Pluggable sources + failover; ≤50% of limits; paid/SWIM plug-ins identified |
+| Low-altitude coverage gaps | Coverage report in Phase 1; options: receiver or paid source |
+| Military aircraft with transponders off | Unfixable with ADS-B; the UI says so |
+| Wrong claimed routes | adsb.im plausibility flag + own check; route plausibility is a filter field |
+| False alarms from maneuvering aircraft | Ensemble probability, hysteresis, confidence as a filter field, backtest |
+| Notification overload while tuning | Shadow mode, backtest before going live, quick mutes from notifications, safety ceiling |
+| Backtests competing with live alerting | Background task, date-range cap, live loop has priority |
+| Internet exposure | Cloudflare Tunnel (no open ports), TOTP, lockout, CSRF/CSP, audit log |
 
 ---
 
-## 10. Open questions (please answer before approval)
+## 15. Open questions
 
-See the summary in the chat. The same questions are tracked here:
+> Historical (all answered). Current open items and next steps: [HANDOFF.md](HANDOFF.md).
 
-1. Phone OS (iOS / Android)? Is the HA Companion app installed and signed in?
-2. How is the server reachable from outside: reverse proxy (which), Tailscale/WireGuard, Cloudflare Tunnel, or LAN only? Do you already use SSO such as Authelia or Authentik?
-3. Server CPU architecture (x86-64 / ARM64) and roughly how much RAM is free?
-4. Backend language: Python (recommended) or Go?
-5. Rough home region (city level is fine) and home-zone radius. This tunes reach, poll tiers and the realistic coverage expectation.
-6. Default lead time: is ~5–10 min right, and should a minimum elevation angle (e.g. 15°) apply by default?
-7. Will you feed an RTL-SDR to adsb.fi / adsb.lol (better access, future-proof), or only use it locally?
-8. Repo visibility: will this repo stay private? This affects whether replay fixtures from aggregator data can be committed.
+1. **Approve this plan (v3) and start Phase 0?**
+2. **Aircraft photos in notifications:** OK to show plane-alert-db photo links? They load from third-party sites when the notification arrives.
+3. **FAA SWIM (JetTip-style scheduled arrivals):** keep it in Phase 5 as an option, or drop it? It only helps with civil traffic.

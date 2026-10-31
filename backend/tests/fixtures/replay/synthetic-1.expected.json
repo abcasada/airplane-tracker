@@ -1,0 +1,16 @@
+{
+  "description": "Synthetic 30 min recording (tests/scenarios/replay_fixture.py). Places and filters are set up in tests/test_replay.py. Reviewed by hand: a4004 is a deliberate false alarm (it turns around ~11 nm out); a7007 is already overhead when first seen, so it matches 'Predicted visible' but is not a predictable event.",
+  "batches": 151,
+  "alerts": {
+    "Emergency squawks": [],
+    "Military visible": ["ae1001"],
+    "Predicted visible": ["a4004", "a7007", "ae1001"],
+    "Inside range": ["ae6006"],
+    "Arriving KSLN": ["a5005"]
+  },
+  "predictor": {
+    "visible": {"predictable_events": 1, "recall": 1.0, "false_alarms": 1},
+    "entry": {"predictable_events": 1, "recall": 1.0, "false_alarms": 0},
+    "arrival": {"predictable_events": 1, "recall": 1.0, "false_alarms": 0}
+  }
+}
