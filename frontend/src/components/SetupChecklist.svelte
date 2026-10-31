@@ -4,18 +4,18 @@
   import type { Place } from '../lib/types'
 
   let hasHome = $state(true)
-  let haReady = $state(true)
+  let ntfyReady = $state(true)
   let tz = $state('')
   const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone
 
   onMount(async () => {
-    const [places, ha, alerting] = await Promise.all([
+    const [places, ntfy, alerting] = await Promise.all([
       get<Place[]>('/api/places'),
-      get<{ url: string; service: string | null; token_set: boolean }>('/api/settings/ha'),
+      get<{ url: string; topic: string }>('/api/settings/ntfy'),
       get<{ timezone: string }>('/api/settings/alerting'),
     ])
     hasHome = places.some((p) => p.is_home)
-    haReady = !!ha.url && ha.token_set && !!ha.service
+    ntfyReady = !!ntfy.url && !!ntfy.topic
     tz = alerting.timezone
   })
 
@@ -32,15 +32,15 @@
     <button class="small" onclick={useDeviceTz}>Use {deviceTz}</button>
   </div>
 {/if}
-{#if !hasHome || !haReady}
+{#if !hasHome || !ntfyReady}
   <div class="card stack setup">
     <h2>Finish setting up</h2>
     <ul>
       <li class:done={hasHome}>
         {hasHome ? '✓' : '○'} Set your home location — <a href="#/places">Places</a>
       </li>
-      <li class:done={haReady}>
-        {haReady ? '✓' : '○'} Connect Home Assistant and pick your phone — <a href="#/settings">Settings</a>
+      <li class:done={ntfyReady}>
+        {ntfyReady ? '✓' : '○'} Connect your ntfy server and topic — <a href="#/settings">Settings</a>
       </li>
     </ul>
   </div>

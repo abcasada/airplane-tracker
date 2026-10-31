@@ -11,7 +11,7 @@ from app.ingest.poller import WATCH_CIRCLE
 from app.watch import REG_LOOKUP_INTERVAL_S, WATCH_INTERVAL_S, targets
 from tests.conftest import Harness
 
-HA = "http://ha:8123"
+NTFY = "http://ntfy"
 FI_HEX = "https://opendata.adsb.fi/api/v2/hex/"
 LOL_HEX = "https://api.adsb.lol/v2/hex/"
 FI_REG = "https://opendata.adsb.fi/api/v2/registration/"
@@ -66,7 +66,7 @@ async def _setup(h: Harness, regs: list[str]) -> int:
     await rt.airport_index.load(db)
     c_ = h.client
     await c_.post("/api/places", json=HOME)
-    await c_.put("/api/settings/ha", json={"url": HA, "token": "t", "service": "mobile_app_x"})
+    await c_.put("/api/settings/ntfy", json={"url": NTFY, "topic": "planes", "token": "tk_test"})
     body = {
         "name": "Followed aircraft",
         "definition": {"root": {"mode": "all", "children": [
@@ -102,9 +102,7 @@ async def test_followed_aircraft_is_found_anywhere_and_notifies(authed: Harness)
     by_reg = respx.get(f"{FI_REG}N999ZZ").mock(
         return_value=httpx.Response(200, json=payload(authed))
     )
-    sent = respx.post(f"{HA}/api/services/notify/mobile_app_x").mock(
-        return_value=httpx.Response(200, json=[])
-    )
+    sent = respx.post(f"{NTFY}/").mock(return_value=httpx.Response(200, json=[]))
     await rt.poller.watch_tick()
     assert hexes.call_count == 1 and sent.call_count == 1
     assert by_reg.call_count == 0  # the hex lookup used this second's budget
@@ -145,9 +143,7 @@ async def test_unknown_registration_resolves_by_lookup_and_fails_over(authed: Ha
     respx.get(f"{FI_REG}N777QQ").mock(
         return_value=httpx.Response(200, json=payload(authed, ac("a0b1c2", "N777QQ", 38.8, -97.6)))
     )
-    respx.post(f"{HA}/api/services/notify/mobile_app_x").mock(
-        return_value=httpx.Response(200, json=[])
-    )
+    respx.post(f"{NTFY}/").mock(return_value=httpx.Response(200, json=[]))
     await rt.poller.watch_tick()  # nothing to look up by hex yet, so the lookup goes now
     assert rt.watch.hexes() == ["a0b1c2"]  # learned from the lookup
     # adsb.fi starts refusing: the breaker opens and adsb.lol answers the hex lookup.

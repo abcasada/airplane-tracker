@@ -35,9 +35,9 @@ from app.ingest.planner import PlannerConfig, QueryCircle, plan
 from app.ingest.poller import Poller
 from app.ingest.recorder import Recorder
 from app.live.broker import Broker
+from app.notify.actions import MUTE_SECONDS
 from app.notify.base import Notifier
-from app.notify.ha_events import MUTE_SECONDS, HAEventListener
-from app.notify.homeassistant import HAConfig, HomeAssistantClient, HomeAssistantNotifier
+from app.notify.ntfy import NtfyClient, NtfyNotifier
 from app.places.models import Place
 from app.places.nearby import AirportIndex
 from app.places.repo import PlaceRepo
@@ -67,7 +67,6 @@ class Runtime:
         self.recorder = Recorder(ctx.settings.data_dir / "recordings")
         self.broker = Broker()
         self.routes = RouteService(ctx.db, ctx.http, ctx.clock)
-        self.ha_events = HAEventListener(self._ha_config, self.handle_notification_action)
         self.runways: dict[int, list[Runway]] = {}
         self.coverage = Coverage()
         self.classifier = ClassifierSettings()
@@ -118,7 +117,6 @@ class Runtime:
         if self.ctx.settings.run_background:
             self._spawn(self.poller.run(), "poller")
             self._spawn(self._route_loop(), "routes")
-            self._spawn(self.ha_events.run(), "ha-events")
             self._spawn(self._maintenance(), "maintenance")
 
     async def _seed(self) -> None:
@@ -239,17 +237,19 @@ class Runtime:
     def circles(self) -> list[QueryCircle]:
         return plan(self.places, self.ctx.clock.now(), self.planner_cfg)
 
-    async def _ha_config(self) -> HAConfig | None:
-        from app.api.settings import load_ha_config
-
-        return await load_ha_config(self.ctx)
-
     async def _notifier(self) -> Notifier | None:
-        cfg = await self._ha_config()
-        return HomeAssistantNotifier(HomeAssistantClient(self.ctx.http, cfg)) if cfg else None
+        from app.api.settings import load_ntfy_config
+
+        cfg = await load_ntfy_config(self.ctx)
+        if cfg is None:
+            return None
+        return NtfyNotifier(
+            NtfyClient(self.ctx.http, cfg), self.alerts.tz, self.ctx.secret_key,
+            self.ctx.settings.public_url, self.ctx.clock.now,
+        )  # fmt: skip
 
     async def handle_notification_action(self, kind: str, value: Any) -> None:
-        """A button tapped on a phone notification (see app.notify.ha_events)."""
+        """A button tapped on a phone notification (see app.notify.actions)."""
         now = self.ctx.clock.now()
         if kind == "mute":
             await ExclusionRepo(self.ctx.db, self.ctx.clock).create(

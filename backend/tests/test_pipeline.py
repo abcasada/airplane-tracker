@@ -10,7 +10,7 @@ import respx
 from app.sources.base import Observation, SourceBatch
 from tests.conftest import Harness
 
-HA = "http://ha:8123"
+NTFY = "http://ntfy"
 HOME = {"name": "Home", "lat": 38.84, "lon": -97.61, "elevation_ft": 1220, "radius_nm": 10,
         "is_home": True}  # fmt: skip
 MIL_VISIBLE = {
@@ -39,7 +39,7 @@ def c17(clock_now: float, **kw: Any) -> Observation:
 async def _setup(h: Harness) -> int:
     c = h.client
     home = (await c.post("/api/places", json=HOME)).json()
-    await c.put("/api/settings/ha", json={"url": HA, "token": "t", "service": "mobile_app_x"})
+    await c.put("/api/settings/ntfy", json={"url": NTFY, "topic": "planes", "token": "tk_test"})
     body = json.loads(json.dumps(MIL_VISIBLE))
     body["definition"]["display_place_id"] = home["id"]
     body["definition"]["root"]["children"][1]["place"] = home["id"]
@@ -50,6 +50,19 @@ async def _setup(h: Harness) -> int:
     return fid
 
 
+def _eta_minutes(message: str) -> int:
+    """'ETA 14:32' on the first line → minutes since midnight (UTC in tests)."""
+    first = message.splitlines()[0]
+    assert first.startswith("ETA "), message
+    h, m = first[4:].split(":")
+    return int(h) * 60 + int(m)
+
+
+def _clock_minutes(h: Harness) -> float:
+    t = h.clock.now() % 86400
+    return t / 60
+
+
 async def _feed(h: Harness, *obs: Observation) -> None:
     rt = h.ctx.rt()
     await rt.on_batch(SourceBatch("adsb.fi", h.clock.now(), list(obs)), rt.circles()[0])
@@ -58,17 +71,17 @@ async def _feed(h: Harness, *obs: Observation) -> None:
 @respx.mock
 async def test_match_notifies_once_per_episode(authed: Harness) -> None:
     fid = await _setup(authed)
-    sent = respx.post(f"{HA}/api/services/notify/mobile_app_x").mock(
-        return_value=httpx.Response(200, json=[])
-    )
+    sent = respx.post(f"{NTFY}/").mock(return_value=httpx.Response(200, json=[]))
     await _feed(authed, c17(authed.clock.now()))
     assert sent.call_count == 1
     payload = json.loads(sent.calls[0].request.content)
     assert payload["title"].startswith("✈ BOEING C-17 Globemaster 3 · 1.")
     assert payload["title"].endswith("nm NNE of Home")
     assert "RCH452" in payload["message"] and "Military:" in payload["message"]
-    assert payload["data"]["tag"] == "aircraft-ae1234"
-    assert payload["data"]["channel"] == "Aircraft"
+    assert payload["sequence_id"] == "aircraft-ae1234"
+    assert payload["topic"] == "planes" and payload["priority"] == 4
+    assert payload["tags"] == ["airplane", "military_helmet"]
+    assert sent.calls[0].request.headers["authorization"] == "Bearer tk_test"
 
     # Still matching: same episode, no new notification.
     authed.clock.advance(10)
@@ -99,9 +112,7 @@ async def test_match_notifies_once_per_episode(authed: Harness) -> None:
 @respx.mock
 async def test_optional_repeat_suppression_and_shadow_mode(authed: Harness) -> None:
     fid = await _setup(authed)
-    sent = respx.post(f"{HA}/api/services/notify/mobile_app_x").mock(
-        return_value=httpx.Response(200, json=[])
-    )
+    sent = respx.post(f"{NTFY}/").mock(return_value=httpx.Response(200, json=[]))
     f = (await authed.client.get(f"/api/filters/{fid}")).json()
     f["definition"]["notify"]["repeat_suppress_min"] = 60
     body = {k: f[k] for k in ("name", "description", "enabled", "mode", "definition")}
@@ -128,9 +139,7 @@ async def test_combined_notification_and_exclusions(authed: Harness) -> None:
     second = {"name": "C-17s", "definition": {"root": {"children": [
         {"type": "cond", "field": "type_code", "op": "in", "value": ["C17"]}]}}}  # fmt: skip
     assert (await authed.client.post("/api/filters", json=second)).status_code == 201
-    sent = respx.post(f"{HA}/api/services/notify/mobile_app_x").mock(
-        return_value=httpx.Response(200, json=[])
-    )
+    sent = respx.post(f"{NTFY}/").mock(return_value=httpx.Response(200, json=[]))
     await _feed(authed, c17(authed.clock.now()))
     assert sent.call_count == 1
     msg = json.loads(sent.calls[0].request.content)["message"]
@@ -148,7 +157,7 @@ async def test_combined_notification_and_exclusions(authed: Harness) -> None:
 @respx.mock
 async def test_ha_failure_is_recorded(authed: Harness) -> None:
     await _setup(authed)
-    respx.post(f"{HA}/api/services/notify/mobile_app_x").mock(return_value=httpx.Response(500))
+    respx.post(f"{NTFY}/").mock(return_value=httpx.Response(500))
     await _feed(authed, c17(authed.clock.now()))
     alert = (await authed.client.get("/api/alerts")).json()[0]
     assert alert["notified"] == 0
@@ -226,7 +235,7 @@ async def test_status_and_fields(authed: Harness) -> None:
 async def test_predicted_alert_has_countdown_and_updates_in_place(authed: Harness) -> None:
     c = authed.client
     home = (await c.post("/api/places", json=HOME)).json()
-    await c.put("/api/settings/ha", json={"url": HA, "token": "t", "service": "mobile_app_x"})
+    await c.put("/api/settings/ntfy", json={"url": NTFY, "topic": "planes", "token": "tk_test"})
     body = {
         "name": "Coming into view",
         "definition": {
@@ -238,9 +247,7 @@ async def test_predicted_alert_has_countdown_and_updates_in_place(authed: Harnes
         },
     }  # fmt: skip
     assert (await c.post("/api/filters", json=body)).status_code == 201
-    sent = respx.post(f"{HA}/api/services/notify/mobile_app_x").mock(
-        return_value=httpx.Response(200, json=[])
-    )
+    sent = respx.post(f"{NTFY}/").mock(return_value=httpx.Response(200, json=[]))
     # 16 nm north of home, southbound at 300 kt, 8,000 ft above home: visible in ~2 min.
     # It takes a few reports before there's enough history to trust the projection.
     lat = 38.84 + 16 / 60
@@ -251,10 +258,8 @@ async def test_predicted_alert_has_countdown_and_updates_in_place(authed: Harnes
     assert sent.call_count == 1
     first = json.loads(sent.calls[0].request.content)
     assert " · in ~" in first["title"]
-    assert first["data"]["chronometer"] is True
-    eta_at = first["data"]["when"]
-    assert 60 < eta_at - authed.clock.now() < 200
-    assert "alert_once" not in first["data"]
+    eta_at = _eta_minutes(first["message"])
+    assert 1 <= eta_at - _clock_minutes(authed) <= 4
 
     # It slows right down: the ETA moves out by minutes, so the same notification is updated.
     for _ in range(8):
@@ -263,9 +268,8 @@ async def test_predicted_alert_has_countdown_and_updates_in_place(authed: Harnes
         lat -= 120 * 10 / 3600 / 60
     assert sent.call_count == 2
     update = json.loads(sent.calls[1].request.content)
-    assert update["data"]["alert_once"] is True
-    assert update["data"]["tag"] == first["data"]["tag"]
-    assert update["data"]["when"] - eta_at >= 60
+    assert update["sequence_id"] == first["sequence_id"]  # replaces the notification in place
+    assert _eta_minutes(update["message"]) - eta_at >= 1
     alert = (await c.get("/api/alerts")).json()[0]
     detail = (await c.get(f"/api/alerts/{alert['id']}")).json()
     assert [n["kind"] for n in detail["notifications"]] == ["new", "update"]
@@ -274,9 +278,7 @@ async def test_predicted_alert_has_countdown_and_updates_in_place(authed: Harnes
 @respx.mock
 async def test_filter_list_has_30_day_feedback_stats(authed: Harness) -> None:
     fid = await _setup(authed)
-    respx.post(f"{HA}/api/services/notify/mobile_app_x").mock(
-        return_value=httpx.Response(200, json=[])
-    )
+    respx.post(f"{NTFY}/").mock(return_value=httpx.Response(200, json=[]))
     await _feed(authed, c17(authed.clock.now()))
     alert = (await authed.client.get("/api/alerts")).json()[0]
     r = await authed.client.post(f"/api/alerts/{alert['id']}/feedback", json={"value": "up"})

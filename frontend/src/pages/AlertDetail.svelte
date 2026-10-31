@@ -13,7 +13,7 @@
     facts: Record<string, unknown>
     explanation: ExplainNode | null
     message: string | null
-    notifications: { id: number; sent_at: number; ok: number; error: string | null; title: string; message: string }[]
+    notifications: { id: number; kind: string; sent_at: number; ok: number; error: string | null; title: string; message: string }[]
   }
 
   let a = $state<Detail | null>(null)
@@ -93,7 +93,7 @@
       <div class="card">
         <h2>Notifications</h2>
         {#each a.notifications as n (n.id)}
-          <p class="small">{fmtTime(n.sent_at)} · {n.ok ? 'delivered to Home Assistant' : `failed: ${n.error}`}</p>
+          <p class="small">{fmtTime(n.sent_at)} · {n.ok ? `sent to ntfy${n.kind !== 'new' ? ` (${n.kind})` : ''}` : `failed: ${n.error}`}</p>
         {/each}
       </div>
     {/if}

@@ -10,9 +10,6 @@ services:
     env_file: .env
     volumes:
       - airplane-data:/data
-    extra_hosts:
-      # Lets the app reach Home Assistant on the host (HA usually runs with network_mode: host).
-      - "host.docker.internal:host-gateway"
     mem_limit: 256m
     networks: [tracker]
     # No "ports:" on purpose: only cloudflared talks to the app.

@@ -1,6 +1,6 @@
 # Airplane Tracker
 
-A self-hosted, personal ADS-B aircraft alert service. It watches live aircraft around places you care about, using free public ADS-B APIs. It enriches and classifies them (with a strong focus on military aircraft) and runs them through **filters you build in a dashboard**. Matches go to your phone through Home Assistant.
+A self-hosted, personal ADS-B aircraft alert service. It watches live aircraft around places you care about, using free public ADS-B APIs. It enriches and classifies them (with a strong focus on military aircraft) and runs them through **filters you build in a dashboard**. Matches go to your phone through your own [ntfy](https://ntfy.sh) server.
 
 - **Filters are the product:** a visual builder, live match preview, and explanations of why an aircraft did or didn't match.
 - **Places:** viewpoints (where you watch from, with visibility settings), airports and areas (polygons).

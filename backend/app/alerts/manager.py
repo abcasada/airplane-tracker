@@ -3,7 +3,7 @@
 Always on: one episode per (filter, aircraft); while it keeps matching there is no new
 notification. Several filters matching one aircraft in the same cycle send one combined
 notification. Everything else (repeat suppression, daily caps, quiet hours) is opt-in and off
-by default. The one exception is the daily safety ceiling under Home Assistant's 500/day limit.
+by default. The one exception is the daily safety ceiling, a guard against runaway filters.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ DISPLAY_FACTS = [
 
 class AlertingSettings(BaseModel):
     episode_end_after_s: float = Field(120.0, ge=10, le=3600)
-    daily_ceiling: int = Field(400, ge=1, le=490)
+    daily_ceiling: int = Field(400, ge=1, le=5000)
     repeat_suppress_min: float | None = Field(None, ge=0, le=10080)
     quiet_hours: QuietHours | None = None
     timezone: str = "UTC"
@@ -319,7 +319,7 @@ class AlertManager:
         return suppression_reason(m.filter.mode, n, g, now, self.tz, last_filter, last_any, today)
 
     async def sent_today(self, now: float) -> int:
-        start = now - (now % 86400)  # HA's counter resets at midnight UTC
+        start = now - (now % 86400)  # UTC day
         row = await self.db.fetchone(
             "SELECT count(*) FROM notifications WHERE ok = 1 AND sent_at >= ?", (start,)
         )
@@ -406,7 +406,7 @@ class AlertManager:
     async def _send(self, out: OutgoingNotification) -> str | None:
         notifier = await self.get_notifier()
         if notifier is None:
-            return "Home Assistant is not configured"
+            return "ntfy is not configured (Settings → Notifications)"
         try:
             await notifier.send(out)
         except NotifyError as e:

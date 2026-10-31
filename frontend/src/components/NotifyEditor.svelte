@@ -25,17 +25,13 @@
     <div class="grid-2">
       <label class="field">
         Priority
+        <span class="hint">Sound and vibration for each level are set in the ntfy app</span>
         <select bind:value={n.priority}>
-          <option value="low">Low (quiet)</option>
-          <option value="normal">Normal</option>
-          <option value="high">High (pops up)</option>
-          <option value="critical">Critical (ignores global quiet hours)</option>
+          <option value="low">Low (silent, in the drawer)</option>
+          <option value="normal">Normal (sound)</option>
+          <option value="high">High (pops up, long vibration)</option>
+          <option value="critical">Urgent (max; can override Do Not Disturb; ignores quiet hours)</option>
         </select>
-      </label>
-      <label class="field">
-        Android channel
-        <span class="hint">Set sound and vibration per channel in Android settings</span>
-        <input bind:value={n.channel} maxlength="60" />
       </label>
       <label class="field">
         Distances and directions relative to
@@ -48,9 +44,8 @@
     </div>
     <div class="row">
       <label class="check"><input type="checkbox" bind:checked={n.include_photo} /> Include aircraft photo when available</label>
-      <label class="check"><input type="checkbox" bind:checked={n.alarm_stream} /> Sound even in Do Not Disturb</label>
-      <label class="check" title="For predicted alerts: shows a countdown, and silently updates it (up to 3 times) when the ETA moves by a minute or more">
-        <input type="checkbox" bind:checked={n.update_eta} /> Keep the ETA countdown up to date
+      <label class="check" title="For predicted alerts: shows the ETA, and updates the notification in place (up to 3 times) when it moves by a minute or more">
+        <input type="checkbox" bind:checked={n.update_eta} /> Keep the ETA up to date
       </label>
     </div>
 

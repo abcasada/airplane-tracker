@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-Personal ADS-B aircraft alert service. It polls free ADS-B aggregators around the user's active places, enriches and classifies aircraft (with a strong focus on military), computes generic facts (visibility, arrival score, area entry, predictions with confidence), and runs **user-built filters** over them. It pushes matches to Android through Home Assistant. It ships as **one lightweight Docker container** on a shared home server. The PWA web UI is exposed via a Cloudflare Tunnel behind built-in auth with TOTP 2FA. **The filter dashboard is the product.** The user spends their time fine-tuning filters there.
+Personal ADS-B aircraft alert service. It polls free ADS-B aggregators around the user's active places, enriches and classifies aircraft (with a strong focus on military), computes generic facts (visibility, arrival score, area entry, predictions with confidence), and runs **user-built filters** over them. It pushes matches to Android through the user's self-hosted ntfy server. It ships as **one lightweight Docker container** on a shared home server. The PWA web UI is exposed via a Cloudflare Tunnel behind built-in auth with TOTP 2FA. **The filter dashboard is the product.** The user spends their time fine-tuning filters there.
 
-**Status:** Phases 0–3 done, Phase 4 mostly done (history, day/night, feedback stats, FAA airspace search): secure skeleton, ingest from adsb.fi/adsb.lol, enrichment datasets, military classifier, filter engine and dashboard (builder, live preview, funnel, why-not), alert episodes and Home Assistant notifications (actions, photos, countdowns); airports, routes, arrival score, travel/schedules, live map; prediction (gate + ensemble, hysteresis), replay harness with metrics, and the dashboard backtest. The full design, data-source research and phase order are in **`docs/PLAN.md`**; read it before starting any phase. Don't start a phase the user hasn't approved. When the design changes, update `docs/PLAN.md` in the same commit.
+**Status:** Phases 0–3 done, Phase 4 mostly done (history, day/night, feedback stats, FAA airspace search): secure skeleton, ingest from adsb.fi/adsb.lol, enrichment datasets, military classifier, filter engine and dashboard (builder, live preview, funnel, why-not), alert episodes and ntfy notifications (signed action buttons, photos, ETA updates in place; Home Assistant was removed at the user's request); airports, routes, arrival score, travel/schedules, live map; prediction (gate + ensemble, hysteresis), replay harness with metrics, and the dashboard backtest. The full design, data-source research and phase order are in **`docs/PLAN.md`**; read it before starting any phase. Don't start a phase the user hasn't approved. When the design changes, update `docs/PLAN.md` in the same commit.
 
 ## Stack (planned)
 
@@ -45,7 +45,7 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 - `predict/` — local-tangent-plane geometry, CPA/ETA, generic arrival score and runway-approach projection, two-stage (gate + numpy ensemble) prediction, confidence score.
 - `filters/` — filter expression-tree schema (pydantic), field catalog, compiler to predicates, exclusions. **One engine** serves live alerting, the dashboard live preview/funnel/"why not?", and the backtest. Never fork the evaluation logic.
 - `alerts/` — episode state machine (`predicted → active → ended`), episode de-duplication, opt-in suppression, shadow mode, message templates.
-- `notify/` — `Notifier` interface; Home Assistant (primary), ntfy, web push.
+- `notify/` — `Notifier` interface; ntfy (`ntfy.py`), signed notification-button tokens (`actions.py`). Setup guide: `docs/NTFY.md`.
 - `backup.py` — export/merge-restore of places, filters, mutes, settings and overrides (never credentials).
 - `api/` — REST + SSE. `replay/` — offline replay (`core`), prediction metrics vs the adsb-alarm baseline (`metrics`), the dashboard backtest (`backtest`) and the `python -m app.replay` CLI.
 
@@ -58,7 +58,7 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 - Use the pydantic models in `filters/models.py` and `places/models.py` in API, engine and DB. Don't duplicate the shapes.
 - Terminology: **place** = viewpoint | airport | area. **filter** = user-defined expression tree + places + timing + notification settings. Don't reintroduce "zone" or "rule".
 - **No built-in special cases.** No airport-specific logic, no hard-coded "interesting" or "uninteresting" traffic (flight schools, pattern work, etc.). The app computes generic facts and exposes them as filter fields; the user decides. A new capability means a new field in the catalog, not a hidden behavior.
-- **Suppression is opt-in.** The only always-on de-duplication is one notification per aircraft × filter × place episode, updated in place. Repeat suppression, daily caps, rate caps and quiet hours are optional and default to off. The only exception is the safety ceiling under HA's 500/day limit.
+- **Suppression is opt-in.** The only always-on de-duplication is one notification per aircraft × filter × place episode, updated in place. Repeat suppression, daily caps, rate caps and quiet hours are optional and default to off. The only exception is the daily safety ceiling (default 400), a guard against runaway filters.
 - Every setting that affects alerting (lead time, confidence, visibility, suppression) cascades **global → place → filter**. New settings follow the same cascade and must work in the live preview and the backtest.
 - Every new filter field needs: type, units, help text, autocomplete source (if any), and a test. Stored alert `facts_json` must include it so "why did this fire?" keeps working.
 - Schema changes go through numbered SQL migrations. Never edit an applied migration.
@@ -87,8 +87,8 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 
 ## Security
 
-- Every route requires a session except `/healthz`, `/login`, the manifest and icons. With `AUTH_MODE=proxy`, trust the user header only from configured proxy IPs.
-- Secrets (HA token, ntfy credentials, VAPID keys, password hash) come from env vars or the `/data` volume. They never go in the repo, logs, recordings or the snapshot JSON.
+- Every route requires a session except `/healthz`, `/login`, the manifest, icons, and `/api/notify/action/{token}` (authorized only by its signed, expiring, single-purpose token). With `AUTH_MODE=proxy`, trust the user header only from configured proxy IPs.
+- Secrets (ntfy token, API keys, password hash) come from env vars or the `/data` volume. They never go in the repo, logs, recordings or the snapshot JSON.
 - Validate user-provided regexes (callsign patterns) with a length limit and compile timeout, so a bad pattern can't stall the evaluation loop.
 - Internet-facing via Cloudflare Tunnel: keep TOTP, login lockout, CSRF (Origin check + token), CSP/HSTS headers, and `/docs` disabled in production. Read the client IP only from `CF-Connecting-IP` when the request comes from the trusted `cloudflared` network. The app container publishes no ports.
 - SSE responses send a heartbeat at least every 20 s, because Cloudflare drops idle responses at ~100 s.
@@ -104,7 +104,7 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 
 The repo is intended to go public (MIT) after the Phase 1 MVP, so treat it as public now:
 
-- Never commit personal data: home coordinates, the user's domain, HA URLs or tokens, Cloudflare tunnel tokens, real places or filters. These live in `.env` and `/data`. Ship generic examples only.
+- Never commit personal data: home coordinates, the user's domain, ntfy URLs, topics or tokens, Cloudflare tunnel tokens, real places or filters. These live in `.env` and `/data`. Ship generic examples only.
 - Never commit third-party data except synthetic fixtures or attributed adsb.lol (ODbL) excerpts. Never commit adsb.fi, adsbdb or FlightAware data.
 - gitleaks runs in CI. Git history must stay clean, because history becomes public too.
 

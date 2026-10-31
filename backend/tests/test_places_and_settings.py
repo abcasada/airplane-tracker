@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import respx
 
@@ -30,40 +32,56 @@ async def test_area_polygon_validation(authed: Harness) -> None:
     assert r.status_code == 422
 
 
-async def test_ha_settings_hide_token(authed: Harness) -> None:
+async def test_ntfy_settings_hide_token_and_validate(authed: Harness) -> None:
     c = authed.client
-    r = await c.put("/api/settings/ha", json={"url": "http://ha:8123", "token": "secret-token"})
-    assert r.status_code == 200
-    got = (await c.get("/api/settings/ha")).json()
-    assert got["token_set"] is True
-    assert "secret-token" not in str(got)
+    body = {"url": "http://ntfy", "topic": "planes", "token": "tk_secret"}
+    assert (await c.put("/api/settings/ntfy", json=body)).status_code == 200
+    got = (await c.get("/api/settings/ntfy")).json()
+    assert got["token_set"] is True and got["topic"] == "planes"
+    assert "tk_secret" not in str(got)
+    # Saving without a token keeps it; clear_token removes it.
+    await c.put("/api/settings/ntfy", json={"url": "http://ntfy", "topic": "planes"})
+    assert (await c.get("/api/settings/ntfy")).json()["token_set"] is True
+    await c.put("/api/settings/ntfy", json={"url": "http://ntfy", "topic": "planes",
+                                            "clear_token": True})  # fmt: skip
+    assert (await c.get("/api/settings/ntfy")).json()["token_set"] is False
+    bad = {"url": "ntfy", "topic": "planes"}
+    assert (await c.put("/api/settings/ntfy", json=bad)).status_code == 422
+    bad = {"url": "http://ntfy", "topic": "my topic/../x"}
+    assert (await c.put("/api/settings/ntfy", json=bad)).status_code == 422
 
 
 @respx.mock
-async def test_ha_connection_test_lists_mobile_services(authed: Harness) -> None:
+async def test_ntfy_connection_test_sends_a_notification(authed: Harness) -> None:
     c = authed.client
-    await c.put("/api/settings/ha", json={"url": "http://ha:8123", "token": "t"})
-    respx.get("http://ha:8123/api/").mock(
-        return_value=httpx.Response(200, json={"message": "API running."})
+    assert (await c.post("/api/settings/ntfy/test")).status_code == 400  # not configured
+    await c.put("/api/settings/ntfy", json={"url": "http://ntfy", "topic": "planes",
+                                            "token": "tk_x"})  # fmt: skip
+    respx.get("http://ntfy/v1/health").mock(
+        return_value=httpx.Response(200, json={"healthy": True})
     )
-    respx.get("http://ha:8123/api/services").mock(
-        return_value=httpx.Response(
-            200,
-            json=[{"domain": "notify", "services": {"mobile_app_pixel": {}, "persistent": {}}}],
-        )
-    )
-    r = await c.post("/api/settings/ha/test")
-    assert r.json() == {"ok": True, "message": "API running.", "services": ["mobile_app_pixel"]}
+    sent = respx.post("http://ntfy/").mock(return_value=httpx.Response(200, json={"id": "1"}))
+    r = await c.post("/api/settings/ntfy/test")
+    assert r.json() == {"ok": True}
+    body = json.loads(sent.calls[0].request.content)
+    assert body["topic"] == "planes" and "Test notification" in body["message"]
+    assert sent.calls[0].request.headers["authorization"] == "Bearer tk_x"
 
 
 @respx.mock
-async def test_ha_bad_token_is_reported(authed: Harness) -> None:
+async def test_ntfy_rejected_token_is_reported(authed: Harness) -> None:
     c = authed.client
-    await c.put("/api/settings/ha", json={"url": "http://ha:8123", "token": "bad"})
-    respx.get("http://ha:8123/api/").mock(return_value=httpx.Response(401))
-    r = await c.post("/api/settings/ha/test")
-    assert r.json()["ok"] is False
-    assert "401" in r.json()["error"]
+    await c.put("/api/settings/ntfy", json={"url": "http://ntfy", "topic": "planes",
+                                            "token": "tk_bad"})  # fmt: skip
+    respx.get("http://ntfy/v1/health").mock(
+        return_value=httpx.Response(200, json={"healthy": True})
+    )
+    respx.post("http://ntfy/").mock(return_value=httpx.Response(403))
+    r = await c.post("/api/settings/ntfy/test")
+    assert r.json()["ok"] is False and "403" in r.json()["error"]
+    respx.get("http://ntfy/v1/health").mock(side_effect=httpx.ConnectError("refused"))
+    r = await c.post("/api/settings/ntfy/test")
+    assert "Can't reach ntfy" in r.json()["error"]
 
 
 async def test_prediction_settings_and_place_override(authed: Harness) -> None:

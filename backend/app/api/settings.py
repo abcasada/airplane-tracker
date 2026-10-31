@@ -7,87 +7,79 @@ from pydantic import BaseModel, Field
 from app.alerts.manager import AlertingSettings
 from app.auth.deps import Ctx, CurrentUser
 from app.context import AppContext
-from app.notify.homeassistant import HAConfig, HomeAssistantClient, HomeAssistantError
+from app.notify.base import NotifyError
+from app.notify.ntfy import NtfyClient, NtfyConfig
 from app.predict.engine import PredictionSettings
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
-class HASettingsIn(BaseModel):
-    url: str = Field(max_length=300)
-    token: str | None = Field(None, max_length=1000)  # None keeps the stored token
-    service: str | None = Field(None, max_length=200)
+class NtfySettingsIn(BaseModel):
+    url: str = Field(max_length=300, pattern=r"^https?://")
+    topic: str = Field(min_length=1, max_length=64, pattern=r"^[-_A-Za-z0-9]+$")
+    token: str | None = Field(None, max_length=200)  # None keeps the stored token
+    clear_token: bool = False
 
 
-async def load_ha_config(ctx: AppContext) -> HAConfig | None:
+async def load_ntfy_config(ctx: AppContext) -> NtfyConfig | None:
     """Env vars win over values saved in the UI."""
-    stored: dict[str, Any] = await ctx.db.get_json("ha", {})
-    url = ctx.settings.ha_url or stored.get("url")
-    token = ctx.settings.ha_token or stored.get("token")
-    service = ctx.settings.ha_notify_service or stored.get("service")
-    if not url or not token:
+    stored: dict[str, Any] = await ctx.db.get_json("ntfy", {})
+    url = ctx.settings.ntfy_url or stored.get("url")
+    topic = ctx.settings.ntfy_topic or stored.get("topic")
+    token = ctx.settings.ntfy_token or stored.get("token")
+    if not url or not topic:
         return None
-    return HAConfig(url=url, token=token, service=service)
+    return NtfyConfig(url=url, topic=topic, token=token or None)
 
 
-@router.get("/ha")
-async def get_ha(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
-    stored: dict[str, Any] = await ctx.db.get_json("ha", {})
+@router.get("/ntfy")
+async def get_ntfy(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
+    stored: dict[str, Any] = await ctx.db.get_json("ntfy", {})
     return {
-        "url": ctx.settings.ha_url or stored.get("url", ""),
-        "service": ctx.settings.ha_notify_service or stored.get("service"),
-        "token_set": bool(ctx.settings.ha_token or stored.get("token")),
+        "url": ctx.settings.ntfy_url or stored.get("url", ""),
+        "topic": ctx.settings.ntfy_topic or stored.get("topic", ""),
+        "token_set": bool(ctx.settings.ntfy_token or stored.get("token")),
+        "public_url": ctx.settings.public_url,
         "from_env": {
-            "url": bool(ctx.settings.ha_url),
-            "token": bool(ctx.settings.ha_token),
-            "service": bool(ctx.settings.ha_notify_service),
+            "url": bool(ctx.settings.ntfy_url),
+            "topic": bool(ctx.settings.ntfy_topic),
+            "token": bool(ctx.settings.ntfy_token),
         },
     }
 
 
-@router.put("/ha")
-async def put_ha(body: HASettingsIn, ctx: Ctx, user: CurrentUser) -> dict[str, bool]:
-    stored: dict[str, Any] = await ctx.db.get_json("ha", {})
+@router.put("/ntfy")
+async def put_ntfy(body: NtfySettingsIn, ctx: Ctx, user: CurrentUser) -> dict[str, bool]:
+    stored: dict[str, Any] = await ctx.db.get_json("ntfy", {})
     stored["url"] = body.url.strip()
+    stored["topic"] = body.topic.strip()
     if body.token:
         stored["token"] = body.token.strip()
-    stored["service"] = body.service
-    await ctx.db.set_json("ha", stored)
-    await ctx.db.audit(ctx.clock.now(), user.username, "settings.ha", {"url": stored["url"]})
+    elif body.clear_token:
+        stored.pop("token", None)
+    await ctx.db.set_json("ntfy", stored)
+    await ctx.db.audit(ctx.clock.now(), user.username, "settings.ntfy", {"url": stored["url"]})
     return {"ok": True}
 
 
-async def _client(ctx: AppContext) -> HomeAssistantClient:
-    cfg = await load_ha_config(ctx)
+@router.post("/ntfy/test")
+async def test_ntfy(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
+    """Checks the server, then sends a test notification to the topic."""
+    cfg = await load_ntfy_config(ctx)
     if cfg is None:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "Set the Home Assistant URL and token first"
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Set the ntfy URL and topic first")
+    client = NtfyClient(ctx.http, cfg)
+    try:
+        await client.health()
+        await client.publish(
+            {
+                "title": "✈ Airplane Tracker",
+                "message": "Test notification. If you can read this, alerts will reach your phone.",
+                "tags": ["airplane"],
+                "priority": 3,
+            }
         )
-    return HomeAssistantClient(ctx.http, cfg)
-
-
-@router.post("/ha/test")
-async def test_ha(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
-    client = await _client(ctx)
-    try:
-        message = await client.check()
-        services = await client.notify_services()
-    except HomeAssistantError as e:
-        return {"ok": False, "error": str(e)}
-    return {"ok": True, "message": message, "services": services}
-
-
-@router.post("/ha/test-notification")
-async def test_notification(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
-    client = await _client(ctx)
-    payload = {
-        "title": "✈ Airplane Tracker",
-        "message": "Test notification. If you can read this, alerts will reach your phone.",
-        "data": {"tag": "airplane-tracker-test", "notification_icon": "mdi:airplane"},
-    }
-    try:
-        await client.notify(payload)
-    except HomeAssistantError as e:
+    except NotifyError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True}
 

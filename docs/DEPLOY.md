@@ -31,15 +31,11 @@ Data lives in the `airplane-data` Docker volume (`/data` in the container): the 
 
 If you prefer a bind mount (`./data:/data`), make it writable by the container user first: `mkdir data && sudo chown 10001 data`.
 
-## 3. Connect Home Assistant
+## 3. Connect ntfy (phone notifications)
 
-1. In Home Assistant, open your user profile → **Security** → **Long-lived access tokens** → **Create token**.
-2. In Airplane Tracker go to **Settings → Home Assistant**:
-   - URL: `http://host.docker.internal:8123` if your HA container uses `network_mode: host` (the usual setup). If HA is on a Docker network you share with this app, use its container name, e.g. `http://homeassistant:8123`.
-   - Paste the token, then **Save & test connection**.
-   - Pick your phone from the list (`mobile_app_…`) and **Send test notification**.
+Run your own ntfy server and connect it in **Settings → Notifications (ntfy)**: server URL, topic and a publish token, then **Save & send test notification**. The full walk-through (ntfy's compose file, users and tokens, its own Cloudflare hostname, the phone app) is in **[NTFY.md](NTFY.md)**.
 
-You can also set `HA_URL`, `HA_TOKEN` and `HA_NOTIFY_SERVICE` in `.env`. Values from `.env` win over the UI.
+You can also set `NTFY_URL`, `NTFY_TOPIC` and `NTFY_TOKEN` in `.env`. Values from `.env` win over the UI. Set `PUBLIC_URL` too, so notifications can open the app and offer Mute / Not useful buttons.
 
 ## 4. Install on your phone
 

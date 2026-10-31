@@ -6,20 +6,25 @@
   import { toast } from '../lib/toast.svelte'
   import type { PredictionSettings } from '../lib/types'
 
-  interface HAState {
+  interface NtfyState {
     url: string
-    service: string | null
+    topic: string
     token_set: boolean
-    from_env: { url: boolean; token: boolean; service: boolean }
+    public_url: string | null
+    from_env: { url: boolean; topic: boolean; token: boolean }
   }
 
-  let ha = $state<HAState | null>(null)
-  let haUrl = $state('')
-  let haToken = $state('')
-  let haService = $state<string | null>(null)
-  let services = $state<string[]>([])
-  let testResult = $state<{ ok: boolean; message?: string; error?: string } | null>(null)
+  let ntfy = $state<NtfyState | null>(null)
+  let ntfyUrl = $state('')
+  let ntfyTopic = $state('')
+  let ntfyToken = $state('')
+  let testResult = $state<{ ok: boolean; error?: string } | null>(null)
   let busy = $state(false)
+
+  function randomTopic(): string {
+    const bytes = crypto.getRandomValues(new Uint8Array(9))
+    return 'planes-' + Array.from(bytes, (b) => b.toString(36).padStart(2, '0')).join('').slice(0, 14)
+  }
 
   interface Alerting {
     episode_end_after_s: number
@@ -46,10 +51,9 @@
   let newCodes = $state<string[]>([])
 
   onMount(async () => {
-    ha = await get<HAState>('/api/settings/ha')
-    haUrl = ha.url || 'http://host.docker.internal:8123'
-    haService = ha.service
-    if (haService) services = [haService]
+    ntfy = await get<NtfyState>('/api/settings/ntfy')
+    ntfyUrl = ntfy.url || 'http://ntfy'
+    ntfyTopic = ntfy.topic || randomTopic()
     alerting = await get<Alerting>('/api/settings/alerting')
     prediction = await get<PredictionSettings>('/api/settings/prediction')
     exclusions = await get<Exclusion[]>('/api/exclusions')
@@ -123,46 +127,32 @@
     exclusions = exclusions.filter((e) => e.id !== x.id)
   }
 
-  async function saveHA() {
+  async function saveNtfy(): Promise<boolean> {
     busy = true
     try {
-      await put('/api/settings/ha', { url: haUrl, token: haToken || null, service: haService })
-      haToken = ''
-      ha = await get<HAState>('/api/settings/ha')
-      toast('Home Assistant settings saved')
+      await put('/api/settings/ntfy', { url: ntfyUrl.trim(), topic: ntfyTopic.trim(), token: ntfyToken || null })
+      ntfyToken = ''
+      ntfy = await get<NtfyState>('/api/settings/ntfy')
+      return true
     } catch (e) {
       toast(errorMessage(e), 'error')
+      return false
     } finally {
       busy = false
     }
   }
 
-  async function testHA() {
-    busy = true
+  async function testNtfy() {
     testResult = null
+    if (!(await saveNtfy())) return
+    busy = true
     try {
-      await saveHA()
-      const r = await post<{ ok: boolean; message?: string; error?: string; services?: string[] }>(
-        '/api/settings/ha/test',
-      )
-      testResult = r
-      if (r.ok && r.services) {
-        services = r.services
-        if (!haService && services.length === 1) {
-          haService = services[0]
-          await saveHA()
-        }
-      }
+      testResult = await post<{ ok: boolean; error?: string }>('/api/settings/ntfy/test')
     } catch (e) {
       testResult = { ok: false, error: errorMessage(e) }
     } finally {
       busy = false
     }
-  }
-
-  async function testNotification() {
-    const r = await post<{ ok: boolean; error?: string }>('/api/settings/ha/test-notification')
-    toast(r.ok ? 'Sent. Check your phone.' : (r.error ?? 'Failed'), r.ok ? 'info' : 'error')
   }
 
   async function changePassword(e: SubmitEvent) {
@@ -193,47 +183,47 @@
   <h1>Settings</h1>
 
   <section class="card stack">
-    <h2>Home Assistant</h2>
+    <h2>Notifications (ntfy)</h2>
     <p class="muted small">
-      Notifications go to your phone through the Home Assistant companion app. Create a long-lived
-      access token in Home Assistant under your profile → Security.
+      Alerts go to your phone through your own <a href="https://ntfy.sh" target="_blank" rel="noopener">ntfy</a> server.
+      Install the ntfy app on your phone, add your server, subscribe to the topic below, and turn on
+      instant delivery. See <code>docs/NTFY.md</code> for the server setup.
     </p>
-    {#if ha}
+    {#if ntfy}
+      <div class="grid-2">
+        <label class="field">
+          ntfy server URL (from this app)
+          <span class="hint">On a shared Docker network: <code>http://ntfy</code>. Or its public URL.</span>
+          <input bind:value={ntfyUrl} disabled={ntfy.from_env.url} />
+        </label>
+        <label class="field">
+          Topic
+          <span class="hint">Letters, digits, - and _. A random name is harder to guess.</span>
+          <input bind:value={ntfyTopic} maxlength="64" disabled={ntfy.from_env.topic} />
+        </label>
+      </div>
       <label class="field">
-        Home Assistant URL
-        <span class="hint">
-          From inside Docker: <code>http://host.docker.internal:8123</code> if HA uses host networking,
-          or <code>http://homeassistant:8123</code> on a shared Docker network.
-        </span>
-        <input bind:value={haUrl} disabled={ha.from_env.url} />
-      </label>
-      <label class="field">
-        Long-lived access token
+        Access token for publishing <span class="hint">tk_… from <code>ntfy token add</code>; leave blank if your server is open</span>
         <input
           type="password"
-          bind:value={haToken}
-          placeholder={ha.token_set ? '•••••• saved (leave blank to keep)' : ''}
-          disabled={ha.from_env.token}
+          bind:value={ntfyToken}
+          placeholder={ntfy.token_set ? '•••••• saved (leave blank to keep)' : ''}
+          disabled={ntfy.from_env.token}
           autocomplete="off"
         />
       </label>
       <div class="row">
-        <button onclick={testHA} disabled={busy}>Save &amp; test connection</button>
+        <button class="primary" onclick={testNtfy} disabled={busy || !ntfyUrl || !ntfyTopic}>Save &amp; send test notification</button>
         {#if testResult}
-          <span class={testResult.ok ? 'ok' : 'error'}>
-            {testResult.ok ? `✓ ${testResult.message}` : testResult.error}
-          </span>
+          <span class={testResult.ok ? 'ok' : 'error'}>{testResult.ok ? '✓ Sent. Check your phone.' : testResult.error}</span>
         {/if}
       </div>
-
-      <label class="field">
-        Phone (notify service)
-        <select bind:value={haService} onchange={saveHA} disabled={ha.from_env.service}>
-          <option value={null}>— test the connection to list phones —</option>
-          {#each services as s (s)}<option value={s}>{s}</option>{/each}
-        </select>
-      </label>
-      <div><button onclick={testNotification} disabled={!haService}>Send test notification</button></div>
+      {#if !ntfy.public_url}
+        <p class="small error">
+          PUBLIC_URL isn't set, so notifications can't open the app or offer Mute / Not useful buttons.
+          Set it in <code>.env</code>.
+        </p>
+      {/if}
     {/if}
   </section>
 

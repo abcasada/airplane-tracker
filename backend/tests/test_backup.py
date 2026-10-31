@@ -26,8 +26,8 @@ async def _configure(h: Harness) -> dict[str, int]:
     await c.post("/api/military/overrides", json={"key": "hex:a12345", "is_military": True})
     s = (await c.get("/api/settings/prediction")).json()
     await c.put("/api/settings/prediction", json=s | {"min_confidence": 0.7})
-    await c.put("/api/settings/ha", json={"url": "http://ha:8123", "token": "SECRET-TOKEN",
-                                          "service": "mobile_app_x"})  # fmt: skip
+    await c.put("/api/settings/ntfy", json={"url": "http://ntfy.internal", "topic": "planes",
+                                            "token": "tk_SECRETTOKEN"})  # fmt: skip
     return {"home": home, "range": rng, "filter": fid}
 
 
@@ -37,7 +37,7 @@ async def test_export_has_configuration_but_no_credentials(authed: Harness) -> N
     assert r.status_code == 200
     assert "attachment" in r.headers["content-disposition"]
     text = r.text
-    assert "SECRET-TOKEN" not in text and "http://ha:8123" not in text
+    assert "SECRETTOKEN" not in text and "ntfy.internal" not in text
     assert "password" not in text and "totp" not in text.lower()
     data = r.json()
     assert data["format"] == "airplane-tracker-backup/1"

@@ -113,7 +113,7 @@ async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
         "last_eval_ms": round(rt.last_eval_ms, 1),
         "last_eval_at": rt.last_eval_at,
         "live_clients": rt.broker.clients,
-        "ha_events": {"connected": rt.ha_events.connected, "last_error": rt.ha_events.last_error},
+        "notifier": {"configured": await rt._notifier() is not None},
         "routes": {
             "cached": len(rt.routes.routes),
             "pending": len(rt.routes.pending),

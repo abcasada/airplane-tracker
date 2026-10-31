@@ -35,9 +35,9 @@ class Settings(BaseSettings):
     # Background services (pollers, dataset downloads). Tests turn this off.
     run_background: bool = True
 
-    ha_url: str | None = None
-    ha_token: str | None = None
-    ha_notify_service: str | None = None
+    ntfy_url: str | None = None
+    ntfy_topic: str | None = None
+    ntfy_token: str | None = None
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod
