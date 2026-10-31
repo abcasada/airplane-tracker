@@ -25,11 +25,11 @@ The repository is private until it goes public, so the server needs to authentic
 # once: install gh (https://cli.github.com) and log in
 gh auth login            # GitHub.com → HTTPS → log in with a browser/code
 
-gh repo clone abcasada/airplane-tracker -- --branch claude/adsb-aircraft-alerts-vtpmaj
+gh repo clone abcasada/airplane-tracker -- --branch main
 cd airplane-tracker
 ```
 
-(With an SSH key on your GitHub account instead: `git clone -b claude/adsb-aircraft-alerts-vtpmaj git@github.com:abcasada/airplane-tracker.git`.)
+(With an SSH key on your GitHub account instead: `git clone -b main git@github.com:abcasada/airplane-tracker.git`.)
 
 Configure and start:
 
