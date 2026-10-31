@@ -245,8 +245,8 @@
           <input type="number" min="10" max="3600" bind:value={alerting.episode_end_after_s} />
         </label>
         <label class="field">
-          Daily safety limit <span class="hint">Home Assistant allows 500 pushes/day per phone</span>
-          <input type="number" min="1" max="490" bind:value={alerting.daily_ceiling} />
+          Daily safety limit <span class="hint">Stops sending if a filter runs away; counts every notification</span>
+          <input type="number" min="1" max="5000" bind:value={alerting.daily_ceiling} />
         </label>
       </div>
       <p class="muted small">Optional, for all filters (off by default):</p>
@@ -264,7 +264,7 @@
         <label class="check">
           <input type="checkbox" checked={alerting.quiet_hours !== null}
             onchange={(e) => (alerting!.quiet_hours = (e.currentTarget as HTMLInputElement).checked ? { start: '22:00', end: '07:00' } : null)} />
-          Quiet hours (critical filters still notify)
+          Quiet hours (urgent filters still notify)
         </label>
         {#if alerting.quiet_hours}
           <input type="time" class="time" bind:value={alerting.quiet_hours.start} /> to
@@ -328,7 +328,7 @@
     <h2>Backup</h2>
     <p class="muted small">
       One file with your places, filters, mutes, settings and military overrides. It includes your home
-      location but never your password, 2FA or Home Assistant token. Keep it private.
+      location but never your password, 2FA or ntfy token. Keep it private.
     </p>
     <div class="row">
       <a class="btn" href="/api/backup" download>Download backup</a>

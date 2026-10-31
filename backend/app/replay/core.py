@@ -14,6 +14,8 @@ from app.places.models import Place
 from app.predict.arrival import Runway
 from app.predict.engine import Predictor
 from app.sources.base import Observation
+from app.tracks import events as flight_events
+from app.tracks.events import FlightEvent
 from app.tracks.store import Track, TrackStore
 
 EnrichFn = Callable[[Track, bool], Awaitable[None]]
@@ -23,6 +25,7 @@ EnrichFn = Callable[[Track, bool], Awaitable[None]]
 class Cycle:
     now: float
     facts: list[LiveFacts]
+    events: list[tuple[Track, FlightEvent]] = field(default_factory=list)
 
 
 @dataclass
@@ -47,6 +50,8 @@ class Replay:
             track, is_new = self.store.update(obs)
             if self.enrich is not None:
                 await self.enrich(track, is_new)
+        airports = self.extras.get("airports")
+        events = flight_events.update(self.store.values(), airports, fetched_at) if airports else []
         self.store.expire(fetched_at)
         tracks = self.store.values()
         if self.history is not None:
@@ -54,4 +59,4 @@ class Replay:
         if self.predictor is not None:
             self.predictor.update(tracks, self.places, fetched_at, self.runways)
         ctx = EvalContext(fetched_at, self._by_id, self.tz, dict(self._extras))
-        return Cycle(fetched_at, [LiveFacts(t, ctx) for t in tracks])
+        return Cycle(fetched_at, [LiveFacts(t, ctx) for t in tracks], events)

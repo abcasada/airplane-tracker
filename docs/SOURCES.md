@@ -34,8 +34,20 @@ worth keeping.
   as practical. Optional second dongle + 978 MHz antenna for **UAT**: in the US, many GA aircraft
   below 18,000 ft broadcast only on 978, and 1090-only receivers never see them.
 - **Software:** the `sdr-enthusiasts/docker-adsb-ultrafeeder` container (readsb + tar1090 map +
-  MLAT), plus `dump978` if you add UAT. The app reads its `aircraft.json` over the Docker network
-  every second.
+  MLAT), plus `dump978` if you add UAT. The app reads its `aircraft.json` over the network every
+  second.
+- **Where it connects (server in the basement):** the dongle has a USB plug; the antenna connects
+  to the dongle by coax. The rule is: keep the coax short, because 1090 MHz signal loss in cable is
+  steep (cheap RG-58 loses about half the signal every ~15 ft; LMR-400 ~4 dB per 100 ft).
+  1. **Raspberry Pi near the antenna (recommended).** Your **Pi 2** works for 1090: readsb uses a
+     fraction of it. It has no Wi-Fi, so run Ethernet to it (a PoE splitter can power it over the
+     same cable). It runs ultrafeeder and feeds the networks; the app reads it over your LAN.
+     Adding 978 UAT on the same Pi 2 is borderline on CPU; a Pi 3/4 or a second Pi handles both.
+  2. **Dongle on the server, antenna on the roof, long coax down.** Works only with low-loss cable
+     (LMR-400) and an LNA/filter at the antenna end; otherwise you lose the far and low traffic
+     you bought the receiver for.
+  3. **Dongle near the antenna, USB back to the server** through a powered USB-over-Ethernet
+     extender. Works, but costs about as much as a Pi and is less robust.
 - **Feed the aggregators from it.** Ultrafeeder can feed adsb.fi, adsb.lol, airplanes.live,
   ADS-B Exchange, FlyItalyADSB and OpenSky; FR24, FlightAware and RadarBox have their own small
   feeder containers. Feeding unlocks perks you'd otherwise pay for or can't get:
@@ -110,6 +122,14 @@ stops cleanly at the cap. Responses are cached and never exported or committed.
 - Plans (check the live price page): **Explorer ~$9/month** (30,000 credits, ~10 req/min; FR24's
   blog has mentioned double credits during promotions), Essential ~$90/month, Advanced ~$900
   (commercial). Credits per call aren't published per endpoint; we'll measure with `/api/usage`.
+- **Budget = credits, not dollars.** Explorer is a flat $9; it doesn't bill overages. When the
+  month's credits run out, calls fail until they refresh (or you buy a top-up, which expires after
+  6 months). Credits don't roll over. A third-party integration reports ~6 credits per flight
+  returned by the live-positions endpoint, so 30,000 credits ≈ 5,000 aircraft lookups a month
+  (~160/day). That's plenty for on-demand lookups and filling gaps for followed aircraft every few
+  minutes, but nowhere near enough to poll an area continuously. The app will enforce a monthly
+  credit cap (default ~90% of the plan) and space gap-fill lookups out (e.g. one per followed
+  aircraft per 5 minutes while the free feeds have lost it).
 - **Adds:** origin/destination and flight info for airline and many bizjet flights, FR24's very
   large receiver network, and positions where community feeds have gaps.
 - **Doesn't add much for military:** FR24 filters aircraft whose operators ask to be hidden, which

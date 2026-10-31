@@ -29,7 +29,12 @@ export const TEMPLATES: Template[] = [
     key: 'aircraft-anywhere',
     title: 'Specific aircraft, anywhere',
     description: 'Get notified when these aircraft are flying, wherever they are. Add tail numbers (registrations).',
-    build: () => make('Followed aircraft', 'Notifies when any of these aircraft shows up, anywhere.', [c('registration', 'in', [])], undefined, null),
+    build: () => {
+      const f = make('Followed aircraft', 'Notifies when any of these aircraft shows up, takes off or lands, anywhere.', [c('registration', 'in', [])], undefined, null)
+      f.definition.notify.on_takeoff = true
+      f.definition.notify.on_landing = true
+      return f
+    },
   },
   {
     key: 'military-visible',

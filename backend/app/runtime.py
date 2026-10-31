@@ -46,6 +46,7 @@ from app.predict.engine import PredictionSettings, PredictionState, Predictor
 from app.replay.backtest import Backtester
 from app.sources import readsb
 from app.sources.base import SourceBatch
+from app.tracks import events as flight_events
 from app.tracks.store import Track, TrackStore
 from app.watch import Watchlist
 
@@ -343,8 +344,11 @@ class Runtime:
         async with self._lock:
             await self.ingest(batch)
             await asyncio.to_thread(self.recorder.write, batch)
-            self.store.expire(self.ctx.clock.now())
-            await self.evaluate()
+            now = self.ctx.clock.now()
+            # Before expiry, so an aircraft lost low near an airfield still counts as landed.
+            events = flight_events.update(self.store.values(), self.airport_index, now)
+            self.store.expire(now)
+            await self.evaluate(events)
 
     def home(self) -> Place | None:
         return next((p for p in self.places if p.is_home), None)
@@ -359,7 +363,9 @@ class Runtime:
     def facts_for_all(self, ctx: EvalContext) -> list[LiveFacts]:
         return [LiveFacts(t, ctx) for t in self.store.values()]
 
-    async def evaluate(self) -> None:
+    async def evaluate(
+        self, events: list[tuple[Track, flight_events.FlightEvent]] | None = None
+    ) -> None:
         started = time.perf_counter()
         now = self.ctx.clock.now()
         ectx = self.eval_context(now)
@@ -382,7 +388,9 @@ class Runtime:
                     matches.append(Match(f, compiled, facts))
                     by_hex.setdefault(facts.hex, []).append(f.id)
         self.matches = by_hex
-        await self.alerts.process(now, matches, ectx.places)
+        await self.alerts.process(
+            now, matches, ectx.places, [(LiveFacts(t, ectx), ev) for t, ev in events or []]
+        )
         self.last_eval_ms = (time.perf_counter() - started) * 1000
         self.last_eval_at = now
         self._publish_live(all_facts, now)

@@ -28,6 +28,7 @@ from app.history import SightingsBook
 from app.ingest.recorder import read_batches
 from app.predict.engine import Predictor
 from app.sources.base import Observation
+from app.tracks.events import FlightEvent
 
 from .core import Cycle, Replay
 
@@ -107,10 +108,28 @@ class BacktestEngine:
         day = self._day(cycle.now)
         if not self.days or self.days[-1] != day:
             self.days.append(day)
+        events = {t.hex: ev for t, ev in cycle.events}
         for side in self.sides.values():
-            self._evaluate(side, cycle.now, day, cycle.facts)
+            self._evaluate(side, cycle.now, day, cycle.facts, events)
 
-    def _evaluate(self, side: _Side, now: float, day: str, facts: list[LiveFacts]) -> None:
+    def _event_ok(self, side: _Side, now: float, ev: FlightEvent | None) -> bool:
+        if ev is None:
+            return False
+        n = side.definition.notify
+        return (
+            suppression_reason(side.mode, n, self.alerting, now, self.tz, None, None, 0, ev.kind)
+            is None
+        )
+
+    def _evaluate(
+        self,
+        side: _Side,
+        now: float,
+        day: str,
+        facts: list[LiveFacts],
+        events: dict[str, FlightEvent] | None = None,
+    ) -> None:
+        events = dict(events or {})
         # Exclusions as they stand today, as if they had been in place all along.
         for f in facts:
             if not side.compiled.matches(f):
@@ -134,7 +153,9 @@ class BacktestEngine:
                 None,  # other filters aren't replayed, so cross-filter suppression can't apply
                 notified_today,
             )
-            if reason is None:
+            # Same as live: a take-off in the same cycle rides on the new-episode notification.
+            same_cycle = self._event_ok(side, now, events.pop(hex_, None))
+            if reason is None or same_cycle:
                 side.notified_by_day[day] = side.notified_by_day.get(day, 0) + 1
                 side.last_notified[hex_] = now
             a = side.aircraft.get(hex_)
@@ -148,6 +169,9 @@ class BacktestEngine:
             else:
                 a["episodes"] += 1
                 a["callsign"] = a["callsign"] or f.track.callsign
+        for hex_, ev in events.items():
+            if hex_ in side.active and self._event_ok(side, now, ev):
+                side.notified_by_day[day] = side.notified_by_day.get(day, 0) + 1
         end_after = self.alerting.episode_end_after_s
         for hex_, last in list(side.active.items()):
             if now - last >= end_after:

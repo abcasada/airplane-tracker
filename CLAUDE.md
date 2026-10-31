@@ -40,11 +40,11 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 - `watch.py` — aircraft followed anywhere: filter conditions "registration/hex is/in …" become a watchlist the poller looks up wherever they fly.
 - `enrich/` — tar1090-db aircraft DB + military address ranges, plane-alert-db (ODbL), adsb.im routeset → VRS standing-data → adsbdb routes, OurAirports airports and runways. All lookups go through the SQLite `cache` table.
 - `classify/` — military/government/police classifier: weighted signals → score + human-readable reasons; user overrides always win.
-- `tracks/` — in-memory per-aircraft ring buffers and derived kinematics.
+- `tracks/` — in-memory per-aircraft ring buffers, derived kinematics, and take-off/landing detection (`events.py`).
 - `places/` — viewpoints (visibility: elevation angle + size-based slant range), airport targets (ICAO + runways), area targets (polygon + altitude band + schedule).
 - `predict/` — local-tangent-plane geometry, CPA/ETA, generic arrival score and runway-approach projection, two-stage (gate + numpy ensemble) prediction, confidence score.
 - `filters/` — filter expression-tree schema (pydantic), field catalog, compiler to predicates, exclusions. **One engine** serves live alerting, the dashboard live preview/funnel/"why not?", and the backtest. Never fork the evaluation logic.
-- `alerts/` — episode state machine (`predicted → active → ended`), episode de-duplication, opt-in suppression, shadow mode, message templates.
+- `alerts/` — episode state machine (`predicted → active → ended`), episode de-duplication, opt-in suppression, shadow mode, message templates, take-off/landing notifications per filter.
 - `notify/` — `Notifier` interface; ntfy (`ntfy.py`), signed notification-button tokens (`actions.py`). Setup guide: `docs/NTFY.md`.
 - `backup.py` — export/merge-restore of places, filters, mutes, settings and overrides (never credentials).
 - `api/` — REST + SSE. `replay/` — offline replay (`core`), prediction metrics vs the adsb-alarm baseline (`metrics`), the dashboard backtest (`backtest`) and the `python -m app.replay` CLI.

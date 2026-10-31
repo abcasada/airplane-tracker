@@ -31,6 +31,7 @@ TEMPLATE_KEYS = {
     "filters": "Names of the matching filters",
     "eta": "Predicted arrival or visibility, e.g. 'in ~4 min' (empty if not predicted)",
     "near": "Where it is relative to the nearest airport, e.g. '12 nm SW of Dover AFB (KDOV)'",
+    "event": "For take-off/landing notifications, e.g. 'took off from Salina Regional (KSLN)'",
 }
 
 # Beyond this from the display place, the title says where the aircraft is instead.
@@ -111,6 +112,7 @@ def template_values(
         "filters": ", ".join(filter_names),
         "eta": fmt_eta(eta_seconds(facts, place)),
         "near": facts.get("near_description") or "",
+        "event": "",
     }
 
 
@@ -131,6 +133,11 @@ def default_title(values: dict[str, str]) -> str:
     if values["place"] and values["distance"]:
         return render(DEFAULT_TITLE, values)
     return render("✈ {registration} {aircraft}", values)
+
+
+def event_title(values: dict[str, str], kind: str) -> str:
+    icon = "🛫" if kind == "takeoff" else "🛬"
+    return render(f"{icon} {{registration}} {{aircraft}} {{event}}", values)
 
 
 def default_message(values: dict[str, str]) -> str:

@@ -40,6 +40,10 @@ class NotifySettings(BaseModel):
     """How matches reach the phone. All suppression options default to off."""
 
     enabled: bool = True
+    # What to notify about for matched aircraft (take-off/landing: app.tracks.events).
+    on_match: bool = True
+    on_takeoff: bool = False
+    on_landing: bool = False
     priority: Literal["low", "normal", "high", "critical"] = "high"
     channel: str = Field("Aircraft", max_length=60)  # Android notification channel
     alarm_stream: bool = False  # sound even in Do Not Disturb

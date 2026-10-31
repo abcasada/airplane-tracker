@@ -514,6 +514,21 @@ Any enabled filter condition **"registration is / is any of …"** or **"hex is 
 - UI: a "Specific aircraft, anywhere" template, registration autocomplete from the aircraft database, a "Following anywhere" panel in the editor (flying or not, where), and "Follow anywhere" on any aircraft page.
 - **Limits:** only while the aircraft transmits and is within some feeder's range (not over oceans); aircraft with ADS-B off, and those using rotating privacy addresses (FAA PIA), can't be followed. Military aircraft often fly with ADS-B off. FR24 (planned) could fill gaps for civil aircraft.
 
+### 10.1b Take-off and landing notifications (built 2026-10-31)
+
+Each filter's notification settings have **"Notify me when a matching aircraft… starts matching / takes off / lands"** (`on_match`, `on_takeoff`, `on_landing`; defaults on/off/off, and on/on/on for the "Specific aircraft, anywhere" template and "Follow anywhere").
+
+Detection (`app/tracks/events.py`, shared by live alerting and the replay/backtest):
+- **Observed:** the aircraft reports on-ground → airborne (take-off) or airborne → on-ground (landing), credited to the airfield within 3 nm. Needs receivers that hear it on the ground.
+- **Inferred take-off:** first heard climbing (≥300 ft/min) below 2,500 ft above an airfield within 5 nm.
+- **Inferred landing:** last heard below 1,000 ft above an airfield within 3 nm, not climbing, then no position for 150 s (longer than the 60 s lookup interval for followed aircraft, shorter than the 180 s track expiry). Shown as "(probably)".
+- Airfields: all large/medium/small airports, plus heliports for rotorcraft only (so a helipad next to a runway doesn't take the credit). ~70k in a 0.5° grid, ~26 MB.
+- One take-off per flight and one landing per flight (no repeats until the opposite event).
+
+Notifications: a take-off in the same cycle as a new match is announced in that one notification ("🛫 N628TS GULFSTREAM G650 took off from Salina Regional Airport (KSLN)"). Later events go to the filters whose episode for that aircraft is active, as one combined notification that replaces the previous one. Shadow mode, "notifications off", quiet hours and the daily ceiling apply; repeat suppression and daily caps don't (they're about new matches). The `{event}` placeholder is available in custom titles. The backtest counts them the same way.
+
+Generic filter fields: `took_off_recently`, `landed_recently` (last 10 min), `takeoff_airport`, `landing_airport`. For example, "anything that took off from KSLN in the last 10 minutes" works without a watchlist.
+
 **Later (proposed): an FR24-style "simple mode"** for the builder: a flat panel of the common filters (registration, callsign, type, airline/operator, altitude and speed ranges, origin/destination, category, military), each a single row, compiling to the same expression tree. The full builder stays for complex filters.
 
 ### 10.2 Builder and live preview

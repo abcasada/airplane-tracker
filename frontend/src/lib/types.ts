@@ -131,6 +131,9 @@ export interface QuietHours {
 
 export interface NotifySettings {
   enabled: boolean
+  on_match: boolean
+  on_takeoff: boolean
+  on_landing: boolean
   priority: 'low' | 'normal' | 'high' | 'critical'
   channel: string
   alarm_stream: boolean
@@ -273,6 +276,9 @@ export function newId(prefix = 'n'): string {
 export function defaultNotify(): NotifySettings {
   return {
     enabled: true,
+    on_match: true,
+    on_takeoff: false,
+    on_landing: false,
     priority: 'high',
     channel: 'Aircraft',
     alarm_stream: false,

@@ -22,6 +22,7 @@ from app.places.nearby import NearAirport
 from app.predict.arrival import ArrivalInputs, arrival_score
 from app.predict.engine import is_active, prediction_for
 from app.sun import CIVIL_DARK_DEG, SUNRISE_DEG, sun_elevation_deg
+from app.tracks import events as flight_events
 
 from .facts import LiveFacts
 
@@ -350,6 +351,16 @@ def _near(f: LiveFacts) -> NearAirport | None:
     return near
 
 
+def _flight(kind: flight_events.EventKind, attr: str) -> Compute:
+    def compute(f: LiveFacts, _: Place | None) -> Any:
+        ev = flight_events.recent(f.track, kind, f.ctx.now)
+        if attr == "recent":
+            return ev is not None
+        return ev.airport_code if ev else None
+
+    return compute
+
+
 def _history(method: str) -> Compute:
     def compute(f: LiveFacts, p: Place | None) -> Any:
         book = f.ctx.extras.get("sightings")
@@ -468,6 +479,20 @@ for fd in [
              "How the position was obtained. MLAT and TIS-B are less precise than ADS-B.",
              lambda f, _: f.track.pos_source if f.track.has_position else None,
              enum=(("adsb", "ADS-B"), ("mlat", "MLAT"), ("tisb", "TIS-B"), ("other", "Other"))),
+    FieldDef("took_off_recently", "Took off recently", ST, "bool",
+             "Took off in the last 10 minutes: seen on the ground and then airborne, or first "
+             "heard climbing below 2,500 ft within 5 nm of an airfield.",
+             _flight("takeoff", "recent")),
+    FieldDef("landed_recently", "Landed recently", ST, "bool",
+             "Landed in the last 10 minutes: seen touching down, or last heard below 1,000 ft "
+             "within 3 nm of an airfield and not climbing before the signal was lost.",
+             _flight("landing", "recent")),
+    FieldDef("takeoff_airport", "Took off from", ST, "string",
+             "Airfield of a take-off in the last 10 minutes (code, e.g. KSLN).",
+             _flight("takeoff", "airport"), suggest="airports"),
+    FieldDef("landing_airport", "Landed at", ST, "string",
+             "Airfield of a landing in the last 10 minutes (code, e.g. KSLN).",
+             _flight("landing", "airport"), suggest="airports"),
     FieldDef("data_age_s", "Data age", ST, "number", "Seconds since the last position.",
              lambda f, _: f.ctx.now - f.track.pos_time if f.track.pos_time else None, unit="s"),
     FieldDef("seconds_tracked", "Time tracked", ST, "number",

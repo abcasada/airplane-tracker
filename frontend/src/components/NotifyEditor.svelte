@@ -22,6 +22,20 @@
   <label class="check"><input type="checkbox" bind:checked={n.enabled} /> Send notifications for this filter</label>
 
   {#if n.enabled}
+    <fieldset class="when">
+      <legend>Notify me when a matching aircraft…</legend>
+      <label class="check"><input type="checkbox" bind:checked={n.on_match} /> starts matching (appears)</label>
+      <label class="check"><input type="checkbox" bind:checked={n.on_takeoff} /> takes off</label>
+      <label class="check"><input type="checkbox" bind:checked={n.on_landing} /> lands</label>
+      <p class="muted small">
+        Take-off: seen on the ground then airborne, or first heard climbing low near an airfield.
+        Landing: seen touching down, or last heard low near an airfield before the signal was lost
+        (shown as "probably").
+      </p>
+      {#if !n.on_match && !n.on_takeoff && !n.on_landing}
+        <p class="small error">Nothing selected: this filter records alerts but won't notify.</p>
+      {/if}
+    </fieldset>
     <div class="grid-2">
       <label class="field">
         Priority
@@ -108,6 +122,16 @@
 </div>
 
 <style>
+  .when {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    align-items: center;
+  }
+  .when p {
+    flex-basis: 100%;
+    margin: 0;
+  }
   details summary {
     cursor: pointer;
     font-weight: 600;

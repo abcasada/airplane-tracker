@@ -59,7 +59,7 @@
     try {
       const f = await post<{ id: number }>('/api/filters', {
         name: `Follow ${value}`,
-        description: 'Notifies when this aircraft shows up, anywhere.',
+        description: 'Notifies when this aircraft shows up, takes off or lands, anywhere.',
         enabled: true,
         mode: 'live',
         definition: {
@@ -67,6 +67,7 @@
             { type: 'cond', id: newId('c'), field, op: 'in', value: [value], place: null, enabled: true },
           ] },
           display_place_id: null,
+          notify: { on_match: true, on_takeoff: true, on_landing: true },
         },
         note: 'Created from aircraft page',
       })
