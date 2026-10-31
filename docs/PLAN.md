@@ -105,6 +105,12 @@ services:
 
 ## 3. Data sources
 
+> **v4 proposal (2026-10-31), pending your answers:** use every free source plus your own receiver, merged by ICAO hex, and use paid sources (Flightradar24 first) only on demand for aircraft a filter cares about. The full list, terms, feeder perks and a sign-up checklist are in **[SOURCES.md](SOURCES.md)**. Changes to the design below:
+> - **Failover becomes merge.** Every enabled live source is polled within its own budget (≤50% of its published limit) and merged by hex; the freshest position wins. Each aircraft records which sources saw it (`sources` and `seen_by_my_receiver` fields), and a **Sources report** shows how many aircraft each source saw that no other did.
+> - **Local receiver** (readsb/ultrafeeder `aircraft.json`, optional 978 MHz UAT) is a source with no rate limit, polled every second over the Docker network.
+> - **Paid sources are never polled continuously.** They answer only for filter candidates that the free feeds lost, and on-demand lookups, behind a monthly budget cap with a credit meter.
+> - **Container images are not published** (no GHCR releases), per your decision.
+
 ### 3.1 Free live position sources (checked 2026-10-14/15)
 
 | Source | Access | Rate limit | Terms | Live check | Verdict |
@@ -429,7 +435,31 @@ Filter: Military over home
   - quiet hours (with per-filter bypass)
 - **Safety ceiling:** a configurable ceiling (default 400/day) keeps you under HA's 500/day limit. If it's ever reached, the dashboard shows a warning.
 
-**Backup channel:** Web Push to the installed PWA (reliable on Android) can be added in Phase 5 behind the same `Notifier` interface.
+**Backup channel:** dropped in favour of ntfy (below).
+
+### 9.1 ntfy (proposed v4, pending your answers)
+
+You'll run **ntfy** in its own container on the same server. The app gets an `NtfyNotifier` behind the same `Notifier` interface, so everything above (episodes, combined notifications, opt-in suppression, shadow mode, backtest) is unchanged.
+
+**Setup:**
+- `binwiederhier/ntfy` with `auth-file`, `auth-default-access: deny-all`, `cache-file` (missed messages survive restarts), `attachment-cache-dir`, `base-url` = its public hostname, `behind-proxy: true`.
+- Its own Cloudflare Tunnel hostname (e.g. `ntfy.example.com`), so the phone receives notifications away from home. ntfy keeps WebSockets alive every 45 s, under Cloudflare's ~100 s idle cut-off.
+- The app publishes over the internal Docker network (`http://ntfy`) with a publish-only token; the phone subscribes with a read-only token. One private topic with a random name.
+- Android app: enable **instant delivery** (a foreground service). Self-hosted servers don't use Firebase, so this is how messages arrive immediately; battery use is reported as negligible.
+
+**Mapping from the HA design:**
+
+| ntfy feature | Use |
+|---|---|
+| Priority 1–5 | Filter priority low/normal/high/critical → 2/3/4/5. ntfy's Android app has a channel per priority, so sound, vibration and "override Do Not Disturb" are set per priority level in Android (replaces `alarm_stream`). |
+| Title, message, tags | Same templates; tags add emoji (✈️, 🪖 for military). |
+| Click | Opens the PWA on that aircraft. |
+| Attach (URL) | plane-alert-db photo link (no home data). |
+| Actions | "Open" (view), "Mute 1 day" and "Not useful" (http). The phone calls back the app with a **signed, single-purpose token** per notification (expires after 24 h), because it has no web session. That endpoint accepts only those tokens, is rate limited, and can only mute or rate that alert. |
+| Sequence ID (ntfy ≥ 2.16) | **Update in place** per aircraft (`aircraft-<hex>`): ETA changes and combined notifications replace the previous one silently. |
+| Countdown | ntfy has no live chronometer, so the title shows the absolute ETA ("at 14:32, ~4 min") and updates in place when it shifts. |
+
+**Limits:** a self-hosted ntfy has no 500/day cap, so the safety ceiling becomes a per-notifier setting (still on by default as a runaway guard). Nothing sent to ntfy contains home coordinates.
 
 ---
 
@@ -574,10 +604,11 @@ Each phase ends usable, with tests passing and the container working. **The filt
 - FAA airspace search for area polygons; day/night field. *Done:* the area form searches FAA ADDS special use airspace by name or near a point (on demand, cached 7 days), merges stacked sectors with the same outline (R-3601A + B → surface to FL230), converts AGL limits with the ground elevation, and pre-fills active hours when the published times are a single window (time zone from the FAA GMT offset and DST flag).
 - Tune confidence factors on replay data; classifier-list updates from the review loop.
 
-### Phase 5 — Optional sources and extras
-- **FAA SWIM SCDS "filed flight plan" source** (JetTip-style "scheduled visitor" facts for civil flights), if wanted.
-- Paid plug-ins (FlightAware, FR24) if wanted, behind budget caps; OpenSky.
-- Web Push backup channel; GHCR image releases; backup/restore of places and filters. *Backup/restore done:* Settings → Backup downloads one JSON file (places, filters, mutes, settings, military overrides; never credentials). Restore merges, remaps place ids inside filters and mutes, skips places and filters that already exist, and keeps this install's home.
+### Phase 5 — Sources, ntfy, extras (re-planned v4, see SOURCES.md)
+- ntfy notifier (§9.1) and the military review page's list suggestions from your overrides.
+- Multi-source merge + Sources report; FlyItalyADSB and OpenSky; local receiver; FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
+- Dropped: Web Push backup channel (ntfy instead) and GHCR image releases (your decision).
+- Backup/restore of places and filters. *Backup/restore done:* Settings → Backup downloads one JSON file (places, filters, mutes, settings, military overrides; never credentials). Restore merges, remaps place ids inside filters and mutes, skips places and filters that already exist, and keeps this install's home.
 
 ---
 
