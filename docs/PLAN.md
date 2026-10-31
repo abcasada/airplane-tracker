@@ -670,6 +670,8 @@ Each phase ends usable, with tests passing and the container working. **The filt
 
 ## 15. Open questions
 
+> Historical (all answered). Current open items and next steps: [HANDOFF.md](HANDOFF.md).
+
 1. **Approve this plan (v3) and start Phase 0?**
 2. **Aircraft photos in notifications:** OK to show plane-alert-db photo links? They load from third-party sites when the notification arrives.
 3. **FAA SWIM (JetTip-style scheduled arrivals):** keep it in Phase 5 as an option, or drop it? It only helps with civil traffic.
