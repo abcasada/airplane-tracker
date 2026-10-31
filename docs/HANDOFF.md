@@ -6,8 +6,8 @@ For the next development session (moving from a cloud sandbox to the home server
 
 ## State
 
-All work is on branch `claude/adsb-aircraft-alerts-vtpmaj` (not yet merged to `main`); everything
-is committed and pushed. Backend: 151 tests, ruff, mypy --strict clean. Frontend: svelte-check
+All work is merged into `main` (PR #1); develop on feature branches and merge through pull
+requests. Backend: 151 tests, ruff, mypy --strict clean. Frontend: svelte-check
 clean, 5 vitest tests, builds. The Docker image was built and run on 2026-10-31: healthy in ~25 s,
 all datasets import in ~1 min, ~97 MB RAM of the 256 MB `mem_limit`.
 
