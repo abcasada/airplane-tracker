@@ -26,7 +26,7 @@ REPLAY_DUMP=/tmp/after.json uv run pytest -q tests/test_replay.py   # fixture me
 uv run python -m tests.scenarios.replay_fixture                  # regenerate the synthetic replay fixture
 cd frontend && npm ci && npm run check && npm test && npm run build   # build → backend/static
 npm run dev                                    # Vite on :5173, proxies /api to :8080
-docker compose up -d --build                   # app + cloudflared (needs .env)
+docker compose up -d --build                   # app on 127.0.0.1:8790; the server's shared tunnel routes to it (needs .env)
 ```
 
 Before every commit: lint, typecheck and tests must pass for any side you touched.
