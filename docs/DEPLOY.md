@@ -1,17 +1,18 @@
 # Deploying Airplane Tracker
 
-The app runs as one container plus its own Cloudflare Tunnel container. Nothing is exposed on your router; Cloudflare forwards `https://adsb.<your-domain>` through the tunnel to the app.
+The app runs as one container. It listens only on `127.0.0.1:8790` (change it with `HOST_PORT` in `.env`). The server's shared Cloudflare Tunnel, which runs on the host network, forwards `https://adsb.<your-domain>` there. Nothing is exposed on your router or LAN.
 
-## 1. Create the tunnel
+## 1. Add the tunnel route
 
-1. In the Cloudflare dashboard, go to **Zero Trust → Networks → Tunnels → Create a tunnel** and choose **Cloudflared**.
-2. Name it (e.g. `airplane-tracker`). On the "Install connector" step, copy the token from the `docker run` command shown. That long string after `--token` is your `CF_TUNNEL_TOKEN`.
-3. Under **Public hostnames**, add:
+1. In the Cloudflare dashboard, go to **Zero Trust → Networks → Tunnels** and open the server's tunnel.
+2. Under **Public hostnames** (newer dashboard: **Published application routes**), add:
    - Subdomain: `adsb` (or whatever you like), domain: yours
-   - Service: `HTTP`, URL: `airplane-tracker:8080`
+   - Service URL: `http://localhost:8790`
+3. **Don't** add a Cloudflare Access policy in front of it. The app has its own login with two-factor auth, and Access login redirects break the installed phone app (PWA).
 
-   `airplane-tracker` is the compose service name; cloudflared resolves it on the shared Docker network.
-4. **Don't** add a Cloudflare Access policy in front of it. The app has its own login with two-factor auth, and Access login redirects break the installed phone app (PWA).
+Requests reach the app from the Docker network's gateway, which is in `DEFAULT_TRUSTED_PROXIES`, so the client IP for login lockout comes from `CF-Connecting-IP`.
+
+No tunnel on the server yet? Run one `cloudflared` container with `network_mode: host` and its tunnel token, then add the route above.
 
 Optional: a free Cloudflare WAF rate-limiting rule on `/api/auth/*` adds a second layer against password guessing.
 
@@ -35,7 +36,7 @@ Configure and start:
 
 ```bash
 cp .env.example .env
-nano .env                # at least CF_TUNNEL_TOKEN and PUBLIC_URL (https://adsb.<your-domain>)
+nano .env                # at least PUBLIC_URL (https://adsb.<your-domain>)
 docker compose up -d --build
 docker compose ps        # airplane-tracker should become "healthy" within ~30 s
 docker compose logs airplane-tracker | grep -i "setup token"
