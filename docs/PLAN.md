@@ -229,6 +229,7 @@ FR24's military filter isn't publicly documented; it appears to use their own ai
 - Score = 1 − ∏(1 − wᵢ). Weights and lists are editable in the dashboard.
 - **Government** and **police** are separate classes (plane-alert-db CMPG Gov/Pol, owner text such as FAA, CBP, "STATE OF …"). FR24 lumps these together with military; here they're separate fields.
 - Validation: compare against the `dbFlags`-only baseline on recordings. The dashboard lists "possible military" (score 0.3–0.6) for review.
+- **Suggestions from your overrides** (*done*, `classify/suggest.py`). Marking an aircraft stores a snapshot of what the classifier saw (callsign, registration, owner, flags), because callsigns are transient. The review page re-runs the one classifier over your marks (live track first, then the snapshot, then the datasets) and suggests edits you accept or dismiss: add a callsign prefix (≥3 aircraft marked military with the same letters+number callsign and none marked not military), remove a listed prefix or owner word (≥3 marked not military, none military), add an owner text as an owner word (≥3 marked military, no word matches it yet), or move a signal weight one slider step at a time (0.05) to the smallest change that brings ≥3 of your marks in line without flipping any other mark. Each comes with a reason, the aircraft behind it, and how many tracked aircraft it would flip right now. Nothing changes until you accept; accepting edits the same classifier settings as the sliders and lists, so live alerting, the preview and the backtest follow. Dismissed suggestions stay dismissed (setting `military_suggestions`, in backups) until you restore them.
 
 ---
 
@@ -367,7 +368,8 @@ filter_versions(id PK, filter_id, version, definition_json,   -- the filter AST 
 exclusions(id PK, scope ('global', filter_id), kind ('hex','reg','type','operator','callsign','expr'),
            value, until, note, created_at)                     -- quick mutes from notifications/alerts
 
-military_overrides(key PK, is_military, note, created_at)
+military_overrides(key PK, is_military, note, created_at,
+                   snapshot_json)   -- classifier inputs when marked (feeds review suggestions)
 classifier_settings(key PK, value_json)  -- signal weights, callsign/registration/operator lists
 
 alerts(id PK, dedup_key, hex, callsign, reg, type_code, filter_id, filter_version_id, place_id,
@@ -566,7 +568,7 @@ Built (Phase 3): "What if?" on the filter editor runs the draft (and the saved v
 ### 10.6 Other screens
 - **Map:** places (circles, airports with runways, polygons); aircraft colored by matched filter; predicted paths with uncertainty bands; details sheet (all fields, military reasons, route, photo).
 - **Places:** home, airports by ICAO, area polygons (draw or paste), travel viewpoints with dates, "Use my location", visibility settings.
-- **Military review:** "possible military" list, overrides, signal weights and lists.
+- **Military review:** "possible military" list, overrides, signal weights and lists, and list/weight suggestions from your overrides (§5.2).
 - **Settings:** sources status, HA connection test and channel list, defaults (global lead/confidence/visibility), safety ceiling, 2FA, data refresh, attribution (adsb.fi link, adsb.lol ODbL, plane-alert-db ODbL, OpenStreetMap, OurAirports).
 - Works on phone (stacked cards, bottom sheets) and desktop (side-by-side builder and preview).
 
@@ -630,10 +632,10 @@ Each phase ends usable, with tests passing and the container working. **The filt
 ### Phase 4 — History and refinement
 - Sightings history fields ("rare visitor" filters); 👍/👎 stats per filter. *Done.*
 - FAA airspace search for area polygons; day/night field. *Done:* the area form searches FAA ADDS special use airspace by name or near a point (on demand, cached 7 days), merges stacked sectors with the same outline (R-3601A + B → surface to FL230), converts AGL limits with the ground elevation, and pre-fills active hours when the published times are a single window (time zone from the FAA GMT offset and DST flag).
-- Tune confidence factors on replay data; classifier-list updates from the review loop.
+- Tune confidence factors on replay data; classifier-list updates from the review loop (*done:* review suggestions, §5.2).
 
 ### Phase 5 — Sources, ntfy, extras (re-planned v4, see SOURCES.md)
-- ntfy notifier (§9.1) and the military review page's list suggestions from your overrides.
+- ntfy notifier (§9.1) and the military review page's list suggestions from your overrides. *Both done* (suggestions: §5.2).
 - Multi-source merge + Sources report; FlyItalyADSB and OpenSky; local receiver; FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
 - Dropped: Web Push backup channel (ntfy instead) and GHCR image releases (your decision).
 - Backup/restore of places and filters. *Backup/restore done:* Settings → Backup downloads one JSON file (places, filters, mutes, settings, military overrides; never credentials). Restore merges, remaps place ids inside filters and mutes, skips places and filters that already exist, and keeps this install's home.

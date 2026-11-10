@@ -39,7 +39,7 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 - `ingest/` — query planner (places → inner/outer query circles, merged), poller, token-bucket rate limiter, merge-by-hex, recorder.
 - `watch.py` — aircraft followed anywhere: filter conditions "registration/hex is/in …" become a watchlist the poller looks up wherever they fly.
 - `enrich/` — tar1090-db aircraft DB + military address ranges, plane-alert-db (ODbL), adsb.im routeset → VRS standing-data → adsbdb routes, OurAirports airports and runways. All lookups go through the SQLite `cache` table.
-- `classify/` — military/government/police classifier: weighted signals → score + human-readable reasons; user overrides always win.
+- `classify/` — military/government/police classifier: weighted signals → score + human-readable reasons; user overrides always win. `suggest.py` proposes list/weight edits from those overrides (never applied without the user).
 - `tracks/` — in-memory per-aircraft ring buffers, derived kinematics, and take-off/landing detection (`events.py`).
 - `places/` — viewpoints (visibility: elevation angle + size-based slant range), airport targets (ICAO + runways), area targets (polygon + altitude band + schedule).
 - `predict/` — local-tangent-plane geometry, CPA/ETA, generic arrival score and runway-approach projection, two-stage (gate + numpy ensemble) prediction, confidence score.
