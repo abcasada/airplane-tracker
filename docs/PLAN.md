@@ -529,7 +529,10 @@ Notifications: a take-off in the same cycle as a new match is announced in that 
 
 Generic filter fields: `took_off_recently`, `landed_recently` (last 10 min), `takeoff_airport`, `landing_airport`. For example, "anything that took off from KSLN in the last 10 minutes" works without a watchlist.
 
-**Later (proposed): an FR24-style "simple mode"** for the builder: a flat panel of the common filters (registration, callsign, type, airline/operator, altitude and speed ranges, origin/destination, category, military), each a single row, compiling to the same expression tree. The full builder stays for complex filters.
+**FR24-style "simple mode" (built 2026-11-10):** the builder has a **Simple | Advanced** toggle. Simple is a flat panel of common rows: registration, callsign, type, airline code, operator/owner, emitter category, military (any/yes/no), altitude and ground-speed ranges, claimed origin and destination, and distance from a place. Empty rows are ignored; an aircraft must match every filled row. It is only a view over the same expression tree (`frontend/src/lib/simple.ts`, a pure tree⇄rows converter with vitest tests), so preview, funnel (counts per row), "why not?", backtest and alerting are unchanged.
+- Rows write: exact values → `in`, or `glob` when a value has `*`, `?` or `[`; operator → `contains`; category → `in`; military → `is_true`/`is_false`; ranges → `ge`/`le`, or `between` when both ends are set (`gt`/`lt` from existing trees are kept).
+- **Simple shape:** an enabled "all of" root holding only enabled conditions on those fields, at most one per field, with those operators. Anything else (nested groups, any/none, other fields, other operators, switched-off conditions) stays in Advanced, which lists why. Simple → Advanced always works. Round trips are lossless (conditions keep their ids and order); conditions with no values yet are dropped on the first simple edit.
+- Field labels, units, help, enums, places and autocomplete come from the catalog (route origin/destination now autocomplete airports). The chosen view is remembered per device (localStorage); with no choice yet, Simple is used whenever the filter fits it.
 
 ### 10.2 Builder and live preview
 - **Visual builder:** add/remove/reorder conditions, nest groups, toggle a condition off without deleting it.
