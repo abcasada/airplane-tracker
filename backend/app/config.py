@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     ntfy_topic: str | None = None
     ntfy_token: str | None = None
 
+    # Optional live sources; each is enabled only when configured (see docs/SOURCES.md).
+    flyitaly_api_key: str | None = None
+
     @field_validator("trusted_proxies", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:

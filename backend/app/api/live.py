@@ -27,6 +27,7 @@ async def aircraft(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
         "now": ectx.now,
         "home_id": home.id if home else None,
         "aircraft": rt.summaries(rt.facts_for_all(ectx)),
+        "sources": [s.name for s in rt.poller.slots],  # enabled, for the attribution line
     }
 
 

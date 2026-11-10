@@ -86,9 +86,19 @@ worth keeping.
 - **Your part:** either feed it from your receiver, or email them (they ask to be contacted) and
   ask whether a personal, non-commercial alert app polling ≤0.5 req/s around a few places is OK.
 
-### 5. FlyItalyADSB
+### 5. FlyItalyADSB (built, opt-in)
 
-- Free key by email, no receiver needed. Free tier: 30 req/min, 300,000/month, 500 km radius;
+- **Built 2026-11-10:** `GET https://api.flyitalyadsb.com/v2/lat/{lat}/lon/{lon}/dist/{km}` with
+  the `X-Api-Key` header (radius in **km**; our 250 nm cap is 463 km). Response is readsb JSON
+  (`now` in seconds, `ac`), parsed by `readsb.parse_payload`. It's also a lookup source
+  (`/v2/icao/{hex,hex}`, `/v2/reg/{reg}`), used only if adsb.fi and adsb.lol are both down.
+- **Budget:** the monthly quota binds before the per-minute one (300,000/month ≈ 0.11 req/s vs
+  30/min = 0.5 req/s), so the app keeps to ≤0.056 req/s, about one request every 18 s. With the
+  inner (10 s) and outer (30 s) circles that's not enough for both, so FlyItalyADSB polls only the
+  outer circle (it contains the inner one) every 30 s: ~86,000 requests/month (with a single
+  circle, the budget spaces polls ~18 s apart).
+
+- Free key by email (`POST /v2/keys`, instant), no receiver needed. Free tier: 30 req/min, 300,000/month, 500 km radius;
   commercial use allowed, attribution one line (CC BY-SA 4.0). ~3,200 receivers, unfiltered
   (military included), ADS-B Exchange v2 format, so it plugs into our existing parser.
 - Coverage is mostly Europe and North America; how much it adds around Salina will show in the

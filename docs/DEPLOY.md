@@ -61,7 +61,15 @@ Run your own ntfy server and connect it in **Settings → Notifications (ntfy)**
 
 You can also set `NTFY_URL`, `NTFY_TOPIC` and `NTFY_TOKEN` in `.env`. Values from `.env` win over the UI. Set `PUBLIC_URL` too, so notifications can open the app and offer Mute / Not useful buttons.
 
-## 4. Install on your phone
+## 4. Optional data sources
+
+adsb.fi and adsb.lol work without setup. Each source below turns on when its settings are in `.env` (then `docker compose up -d`), and shows up in **System → Sources** with its budget use and how many aircraft only it saw. Details and sign-up steps: **[SOURCES.md](SOURCES.md)**.
+
+| Source | `.env` | Budget the app keeps to |
+|---|---|---|
+| FlyItalyADSB | `FLYITALY_API_KEY=…` (free key by email at flyitalyadsb.com) | ≤50% of the free tier's 300,000 requests/month (~1 request every 18 s) |
+
+## 5. Install on your phone
 
 Open the site in Chrome on Android → menu → **Install app** (or **Add to Home screen**). It then opens full-screen like a native app.
 

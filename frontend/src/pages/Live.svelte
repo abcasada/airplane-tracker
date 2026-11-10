@@ -3,6 +3,7 @@
   import AircraftRow from '../components/AircraftRow.svelte'
   import LiveMap from '../components/LiveMap.svelte'
   import { get } from '../lib/api'
+  import { DEFAULT_SOURCES, SOURCE_CREDITS } from '../lib/attribution'
   import { fmtAlt } from '../lib/format'
   import { live } from '../lib/live.svelte'
   import { navigate } from '../lib/router.svelte'
@@ -12,11 +13,13 @@
   let search = $state('')
   let places = $state<Place[]>([])
   let selected = $state<string | null>(null)
+  let sources = $state<string[]>(DEFAULT_SOURCES)
 
   onMount(async () => {
     places = await get<Place[]>('/api/places')
+    const r = await get<{ aircraft: AircraftSummary[]; now: number; sources: string[] }>('/api/aircraft')
+    sources = r.sources
     if (!live.aircraft.length) {
-      const r = await get<{ aircraft: AircraftSummary[]; now: number }>('/api/aircraft')
       live.aircraft = r.aircraft
       live.now = r.now
     }
@@ -81,8 +84,12 @@
       {/each}
     </div>
     <p class="muted small attrib">
-      Data: <a href="https://adsb.fi" target="_blank" rel="noopener">adsb.fi</a> open data and
-      <a href="https://adsb.lol" target="_blank" rel="noopener">adsb.lol</a> (ODbL), merged.
+      Data, merged:
+      {#each sources.filter((n) => SOURCE_CREDITS[n]) as n, i (n)}{@const c = SOURCE_CREDITS[n]}{i ? ' · ' : ''}{#if c.url}<a
+            href={c.url}
+            target="_blank"
+            rel="noopener">{c.label}</a
+          >{:else}{c.label}{/if} ({c.note}){/each}.
     </p>
   </div>
 </div>

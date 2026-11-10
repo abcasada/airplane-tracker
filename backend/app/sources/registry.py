@@ -17,4 +17,6 @@ def build_sources(
         readsb.adsbfi(http, clock),
         readsb.adsblol(http, clock),
     ]
+    if settings.flyitaly_api_key:
+        sources.append(readsb.flyitaly(http, clock, settings.flyitaly_api_key))
     return sources

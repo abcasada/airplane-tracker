@@ -118,6 +118,7 @@ services:
 | **adsb.fi Open Data** — `opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{nm}` (≤250 nm) | No key | **1 req/s**; 4xx responses count toward a **temporary IP block** | Personal, **non-commercial**; **must cite and link adsb.fi** | 200 OK. Has `r`, `t`, `desc`, `ownOp`, `year`, **`dbFlags`**, `nav_heading`, `nav_altitude_mcp`, vertical rates, `squawk`, `emergency`, `category`. | **Primary** |
 | **adsb.lol** — `api.adsb.lol/v2/point/{lat}/{lon}/{nm}` (≤250 nm) | No key today (a key "obtained by feeding" is planned) | Unpublished, "dynamic" | **ODbL**; contact them for production use | 200 OK, same JSON shape | **Merged** (was failover) |
 | airplanes.live | — | — | — | **403** "Please contact us…" | Excluded |
+| **FlyItalyADSB** — `api.flyitalyadsb.com/v2/lat/{lat}/lon/{lon}/dist/{km}` (≤500 km free) | Free key (`X-Api-Key`) | 30 req/min, 300,000/month per key | CC BY-SA 4.0, one-line credit | not polled (mock-tested only) | **Merged, opt-in** (`FLYITALY_API_KEY`) |
 | OpenSky Network | OAuth2 | 4,000 credits/day registered | Non-commercial | not polled | Possible later fallback. No type or registration. |
 
 **Coverage around Salina** (live check, 80 nm around KSLN on 2026-10-15):
@@ -646,7 +647,7 @@ Each phase ends usable, with tests passing and the container working. **The filt
 
 ### Phase 5 — Sources, ntfy, extras (re-planned v4, see SOURCES.md)
 - ntfy notifier (§9.1) and the military review page's list suggestions from your overrides.
-- Multi-source merge + Sources report (*done*); FlyItalyADSB and OpenSky; local receiver; FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
+- Multi-source merge + Sources report (*done*); FlyItalyADSB (*done*) and OpenSky; local receiver; FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
 - Dropped: Web Push backup channel (ntfy instead) and GHCR image releases (your decision).
 - Backup/restore of places and filters. *Backup/restore done:* Settings → Backup downloads one JSON file (places, filters, mutes, settings, military overrides; never credentials). Restore merges, remaps place ids inside filters and mutes, skips places and filters that already exist, and keeps this install's home.
 
