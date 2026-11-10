@@ -12,17 +12,17 @@ class TokenBucket:
             self.tokens = min(self.burst, self.tokens + (now - self.updated) * self.rate)
         self.updated = now
 
-    def wait_time(self, now: float) -> float:
-        """Seconds until a token is available (0 if one is available now)."""
+    def wait_time(self, now: float, cost: float = 1.0) -> float:
+        """Seconds until `cost` tokens are available (0 if they are available now)."""
         self._refill(now)
-        if self.tokens >= 1.0:
+        if self.tokens >= cost:
             return 0.0
-        return (1.0 - self.tokens) / self.rate
+        return (cost - self.tokens) / self.rate
 
-    def take(self, now: float) -> bool:
+    def take(self, now: float, cost: float = 1.0) -> bool:
         self._refill(now)
-        if self.tokens >= 1.0:
-            self.tokens -= 1.0
+        if self.tokens >= cost:
+            self.tokens -= cost
             return True
         return False
 

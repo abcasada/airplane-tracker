@@ -21,6 +21,7 @@ from app.places.models import Place
 from app.places.nearby import NearAirport
 from app.predict.arrival import ArrivalInputs, arrival_score
 from app.predict.engine import is_active, prediction_for
+from app.sources.base import KNOWN_SOURCES, RECEIVER_SOURCES
 from app.sun import CIVIL_DARK_DEG, SUNRISE_DEG, sun_elevation_deg
 from app.tracks import events as flight_events
 
@@ -479,6 +480,15 @@ for fd in [
              "How the position was obtained. MLAT and TIS-B are less precise than ADS-B.",
              lambda f, _: f.track.pos_source if f.track.has_position else None,
              enum=(("adsb", "ADS-B"), ("mlat", "MLAT"), ("tisb", "TIS-B"), ("other", "Other"))),
+    FieldDef("sources", "Seen by sources", ST, "list",
+             "Live data sources that heard this aircraft in the last minute (adsb.fi, adsb.lol, "
+             "flyitalyadsb, opensky, receiver, receiver-uat). Lookups of followed aircraft "
+             "count too.",
+             lambda f, _: f.track.sources(f.ctx.now) or None,
+             enum=tuple((s, s) for s in KNOWN_SOURCES), suggest="sources"),
+    FieldDef("seen_by_my_receiver", "Seen by my receiver", ST, "bool",
+             "Your own receiver (1090 MHz or 978 MHz UAT) heard it in the last minute.",
+             lambda f, _: any(s in RECEIVER_SOURCES for s in f.track.sources(f.ctx.now))),
     FieldDef("took_off_recently", "Took off recently", ST, "bool",
              "Took off in the last 10 minutes: seen on the ground and then airborne, or first "
              "heard climbing below 2,500 ft within 5 nm of an airfield.",

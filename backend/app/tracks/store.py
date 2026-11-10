@@ -6,7 +6,14 @@ from app.enrich.models import AircraftInfo, Airline
 from app.sources.base import Observation
 
 HISTORY_POINTS = 40
+# With several sources (or a 1 Hz receiver) positions arrive faster than the 10 s polling the
+# prediction was built on; spacing points keeps ~3+ minutes of history in the ring buffer.
+HISTORY_MIN_SPACING_S = 4.0
 EXPIRE_AFTER_S = 180.0
+# A report older than what the track already has (a slower source) only adds what's missing.
+STALE_AFTER_S = 2.0
+# `sources`: the sources that heard the aircraft within this window.
+SOURCE_RECENT_S = 60.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -25,7 +32,8 @@ class Track:
     hex: str
     first_seen: float
     last_seen: float
-    source: str = ""
+    source: str = ""  # the source of the latest report applied
+    heard_by: dict[str, float] = field(default_factory=dict)  # source → when it last heard it
     lat: float | None = None
     lon: float | None = None
     pos_time: float | None = None
@@ -94,15 +102,32 @@ class Track:
     def has_position(self) -> bool:
         return self.lat is not None and self.lon is not None
 
+    def sources(self, now: float) -> list[str]:
+        return sorted(s for s, t in self.heard_by.items() if now - t <= SOURCE_RECENT_S)
+
     def apply(self, obs: Observation) -> None:
-        fresh = obs.seen_at > self.last_seen or self.updates == 0
+        """Merge one report. The freshest position wins; state comes from the freshest report;
+        database fields are only ever filled in, never cleared by a source that lacks them."""
+        if obs.seen_at > self.heard_by.get(obs.source, -1.0):
+            self.heard_by[obs.source] = obs.seen_at
+        stale = self.updates > 0 and obs.seen_at < self.last_seen - STALE_AFTER_S
+        self.updates += 1
+        self._apply_db(obs)
+        if stale:
+            if not self.callsign and obs.callsign:
+                self.callsign = obs.callsign
+            if not self.category and obs.category:
+                self.category = obs.category
+            return
+        fresh = obs.seen_at > self.last_seen or self.updates == 1
         self.last_seen = max(self.last_seen, obs.seen_at)
         self.source = obs.source
-        self.updates += 1
         if obs.pos_time is not None and (self.pos_time is None or obs.pos_time > self.pos_time):
             self.lat, self.lon, self.pos_time = obs.lat, obs.lon, obs.pos_time
             self.pos_source = obs.pos_source
-            if obs.lat is not None and obs.lon is not None:
+            last = self.history[-1].t if self.history else None
+            spaced = last is None or obs.pos_time - last >= HISTORY_MIN_SPACING_S
+            if obs.lat is not None and obs.lon is not None and spaced:
                 self.history.append(
                     TrackPoint(
                         obs.pos_time,
@@ -135,6 +160,8 @@ class Track:
                 self.squawk_streak = 1 if obs.squawk else 0
             self.squawk = obs.squawk
             self.emergency = obs.emergency
+
+    def _apply_db(self, obs: Observation) -> None:
         if obs.registration:
             self.api_registration = obs.registration
         if obs.type_code:

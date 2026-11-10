@@ -81,8 +81,8 @@
       {/each}
     </div>
     <p class="muted small attrib">
-      Data: <a href="https://adsb.fi" target="_blank" rel="noopener">adsb.fi</a> open data, with
-      <a href="https://adsb.lol" target="_blank" rel="noopener">adsb.lol</a> (ODbL) as backup.
+      Data: <a href="https://adsb.fi" target="_blank" rel="noopener">adsb.fi</a> open data and
+      <a href="https://adsb.lol" target="_blank" rel="noopener">adsb.lol</a> (ODbL), merged.
     </p>
   </div>
 </div>

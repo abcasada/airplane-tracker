@@ -1,11 +1,12 @@
 # Data sources: plan and sign-up checklist
 
-Status: **proposed** (2026-10-31). Nothing below is built yet except adsb.fi, adsb.lol, the
-enrichment datasets and the FAA airspace search. Terms and prices were checked on 2026-10-31 and
+Status: approved (2026-10-31). Built: adsb.fi, adsb.lol, the multi-source merge with the Sources
+report (2026-11-10), the enrichment datasets and the FAA airspace search. Terms and prices were checked on 2026-10-31 and
 change often; re-check each before signing up.
 
-Secrets (keys, tokens, passwords) go in `.env` or the `/data` volume, never in the repo. Every
-source can be turned on/off and shows its status, budget use and errors on the System page.
+Secrets (keys, tokens, passwords) go in `.env` or the `/data` volume, never in the repo. Keyed
+sources turn on when their keys are set. Every source shows its status, budget use, errors and
+unique contribution in the Sources report on the System page.
 
 ## How the sources fit together
 
@@ -66,13 +67,13 @@ worth keeping.
 - **Your part:** buy the hardware, decide where it lives (USB into this server, or a Raspberry Pi
   near the antenna), and tell me the feeder accounts you create.
 
-### 2. adsb.fi (built, primary)
+### 2. adsb.fi (built)
 
 - No key. 1 request/s public limit (we use ≤0.5/s), ≤250 nm radius. Personal, non-commercial;
   must link adsb.fi (done on the Live and System pages). Feeders get `/v2/snapshot`.
 - **Your part:** nothing. Optionally feed it.
 
-### 3. adsb.lol (built, failover → becomes a merged source)
+### 3. adsb.lol (built, merged)
 
 - No key today; rate limits "dynamic"; ODbL. A key "obtained by feeding" is announced, undated.
 - **Your part:** nothing now. Feed it once your receiver runs.

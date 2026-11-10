@@ -124,6 +124,15 @@ async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
     }
 
 
+@router.get("/sources")
+async def sources_report(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
+    """Per source: status, use vs budget, and aircraft seen / seen by no other source."""
+    rt = ctx.rt()
+    status_ = rt.poller.status()
+    report = rt.source_stats.report(ctx.clock.now(), [s["name"] for s in status_])
+    return {"status": status_, **report}
+
+
 @router.post("/datasets/refresh")
 async def refresh_datasets(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
     rt = ctx.rt()

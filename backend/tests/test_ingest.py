@@ -135,7 +135,7 @@ class FakeSource:
         return SourceBatch(self.name, 0, [Observation(hex="abc", source=self.name, seen_at=0)])
 
 
-async def test_poller_fails_over_and_respects_intervals() -> None:
+async def test_poller_backs_off_a_failing_source_and_respects_intervals() -> None:
     clock = FakeClock(1000)
     primary, backup = FakeSource("a", fail=429), FakeSource("b")
     got: list[str] = []

@@ -2,7 +2,7 @@
   // Mirrors NOTICE. Keep both in sync when adding a source.
   const CREDITS = [
     { name: 'adsb.fi', url: 'https://adsb.fi', note: 'live positions (open data API, personal non-commercial use)' },
-    { name: 'adsb.lol', url: 'https://adsb.lol', note: 'live positions, backup (ODbL 1.0)' },
+    { name: 'adsb.lol', url: 'https://adsb.lol', note: 'live positions (ODbL 1.0)' },
     { name: 'tar1090-db', url: 'https://github.com/wiedehopf/tar1090-db', note: 'aircraft database and military address ranges (wiedehopf, from Mictronics)' },
     { name: 'plane-alert-db', url: 'https://github.com/sdr-enthusiasts/plane-alert-db', note: 'notable aircraft and photo links (ODbL 1.0, contents DbCL 1.0)' },
     { name: 'VRS standing data', url: 'https://github.com/vradarserver/standing-data', note: 'airlines and routes (CC0)' },
@@ -17,24 +17,13 @@
   import { get, post } from '../lib/api'
   import { fmtAgo } from '../lib/format'
   import { toast } from '../lib/toast.svelte'
+  import SourcesReport from '../components/SourcesReport.svelte'
 
   interface Status {
     version: string
     tracks: number
     places_active: number
     circles: { lat: number; lon: number; radius_nm: number; interval_s: number; tier: string }[]
-    sources: {
-      name: string
-      healthy: boolean
-      open_for_s: number
-      last_ok_at: number | null
-      last_error: string | null
-      requests: number
-      requests_today: number
-      errors: number
-      budget_per_s: number
-      last_latency_ms: number | null
-    }[]
     datasets: { name: string; url: string; rows?: number; imported_at?: number; checked_at?: number; last_error?: string }[]
     dataset_busy: string | null
     recordings: { days: number; bytes: number; retention_days?: number }
@@ -85,37 +74,15 @@
       {#if !s.background}<p class="notice small">Background polling is off (RUN_BACKGROUND=false).</p>{/if}
     </div>
 
-    <div class="card">
-      <h2>Data sources</h2>
-      <div class="table-wrap">
-        <table class="data">
-          <thead><tr><th>Source</th><th>Status</th><th>Requests today</th><th>Errors</th><th>Latency</th></tr></thead>
-          <tbody>
-            {#each s.sources as src (src.name)}
-              <tr>
-                <td>{src.name}</td>
-                <td>
-                  {#if src.healthy}<span class="ok">● ok</span>{:else}<span class="error">● backing off {Math.round(src.open_for_s)} s</span>{/if}
-                  {#if src.last_error}<div class="muted small">{src.last_error}</div>{/if}
-                </td>
-                <td>{src.requests_today}</td>
-                <td>{src.errors}</td>
-                <td>{src.last_latency_ms != null ? `${Math.round(src.last_latency_ms)} ms` : '—'}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-      <p class="muted small">
-        Polling {s.circles.length} area{s.circles.length === 1 ? '' : 's'}:
-        {#each s.circles as c, i (i)}{i ? ', ' : ''}{c.radius_nm} nm every {c.interval_s} s{/each}.
-        Budget: at most half of each source's published rate limit.
-      </p>
-    </div>
+    <SourcesReport />
+    <p class="muted small">
+      Polling {s.circles.length} area{s.circles.length === 1 ? '' : 's'}:
+      {#each s.circles as c, i (i)}{i ? ', ' : ''}{c.radius_nm} nm every {c.interval_s} s{/each}, from every enabled source.
+    </p>
 
     <div class="card">
       <h2>Coverage near home</h2>
-      <p class="muted small">The lowest height above home the public feeds have reported, by distance (last 14 days).</p>
+      <p class="muted small">The lowest height above home the data sources have reported, by distance (last 14 days).</p>
       <table class="data">
         <thead><tr><th>Distance</th><th>Lowest seen</th><th>Reports</th></tr></thead>
         <tbody>

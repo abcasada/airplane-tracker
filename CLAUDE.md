@@ -35,7 +35,7 @@ Before every commit: lint, typecheck and tests must pass for any side you touche
 
 `backend/app/`:
 
-- `sources/` — pluggable sources behind the `Source` protocol: area (adsb.fi primary, adsb.lol failover), local receiver, schedule (FAA SWIM later). `sources/airspace.py` searches FAA special use airspace for area places. Paid sources are deferred plug-ins. They **only fetch and normalize**. Rate limiting, retries and circuit breaking live in `ingest/`.
+- `sources/` — pluggable sources behind the `Source` protocol: area (adsb.fi, adsb.lol, all merged by hex), local receiver, schedule (FAA SWIM later). `sources/airspace.py` searches FAA special use airspace for area places. Paid sources are deferred plug-ins. They **only fetch and normalize**. Rate limiting, retries and circuit breaking live in `ingest/`.
 - `ingest/` — query planner (places → inner/outer query circles, merged), poller, token-bucket rate limiter, merge-by-hex, recorder.
 - `watch.py` — aircraft followed anywhere: filter conditions "registration/hex is/in …" become a watchlist the poller looks up wherever they fly.
 - `enrich/` — tar1090-db aircraft DB + military address ranges, plane-alert-db (ODbL), adsb.im routeset → VRS standing-data → adsbdb routes, OurAirports airports and runways. All lookups go through the SQLite `cache` table.
