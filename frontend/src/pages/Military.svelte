@@ -21,6 +21,20 @@
     signals: string[]
     override: boolean | null
   }
+  interface Suggestion {
+    id: string
+    title: string
+    reason: string
+    count: number
+    evidence: string[]
+    live_changes: number
+  }
+  interface SuggestionList {
+    marks: number
+    min_evidence: number
+    dismissed: number
+    suggestions: Suggestion[]
+  }
 
   const WEIGHT_LABELS: Record<string, string> = {
     db_flag: 'Military flag in aircraft database',
@@ -37,16 +51,19 @@
   let review = $state<ReviewItem[]>([])
   let overrides = $state<{ key: string; is_military: boolean; note: string }[]>([])
   let lists = $state<Record<string, string>>({})
+  let suggestions = $state<SuggestionList | null>(null)
 
   async function load() {
-    const [s, r, o] = await Promise.all([
+    const [s, r, o, sg] = await Promise.all([
       get<ClassifierSettings>('/api/military/settings'),
       get<{ aircraft: ReviewItem[] }>('/api/military/review'),
       get<{ key: string; is_military: boolean; note: string }[]>('/api/military/overrides'),
+      get<SuggestionList>('/api/military/suggestions'),
     ])
     settings = s
     review = r.aircraft
     overrides = o
+    suggestions = sg
     lists = {
       callsign_prefixes: s.callsign_prefixes.join('\n'),
       registration_patterns: s.registration_patterns.join('\n'),
@@ -87,6 +104,26 @@
     await load()
   }
 
+  async function acceptSuggestion(s: Suggestion) {
+    try {
+      await post('/api/military/suggestions/accept', { id: s.id })
+      toast('Classifier updated')
+    } catch (e) {
+      toast(errorMessage(e), 'error')
+    }
+    await load()
+  }
+
+  async function dismissSuggestion(s: Suggestion) {
+    await post('/api/military/suggestions/dismiss', { id: s.id })
+    await load()
+  }
+
+  async function restoreDismissed() {
+    await del('/api/military/suggestions/dismissed')
+    await load()
+  }
+
   async function removeOverride(key: string) {
     await del(`/api/military/overrides/${encodeURIComponent(key)}`)
     await load()
@@ -122,6 +159,45 @@
       <p class="muted small">No military or borderline aircraft in range right now.</p>
     {/each}
   </div>
+
+  {#if suggestions}
+    <div class="card">
+      <h2>Suggestions from your marks</h2>
+      <p class="muted small">
+        Patterns in the {suggestions.marks} aircraft you marked military or not military. Nothing
+        changes until you accept; accepting edits the weights and lists below.
+      </p>
+      {#each suggestions.suggestions as s (s.id)}
+        <div class="sug stack">
+          <strong>{s.title}</strong>
+          <span class="small">{s.reason}</span>
+          <span class="small muted">
+            <span class="badge accent">{s.count} aircraft</span>
+            {s.evidence.join(', ')}{s.count > s.evidence.length ? ', …' : ''}
+          </span>
+          {#if s.live_changes}
+            <span class="small muted">
+              Would change {s.live_changes} aircraft tracked right now.
+            </span>
+          {/if}
+          <div class="row">
+            <button class="small primary" onclick={() => acceptSuggestion(s)}>Accept</button>
+            <button class="small" onclick={() => dismissSuggestion(s)}>Dismiss</button>
+          </div>
+        </div>
+      {:else}
+        <p class="muted small">
+          No suggestions right now. They appear when at least {suggestions.min_evidence} of your
+          marks agree on a callsign prefix, an owner, or a clue that scores them wrong.
+        </p>
+      {/each}
+      {#if suggestions.dismissed}
+        <button class="small" onclick={restoreDismissed}>
+          Show {suggestions.dismissed} dismissed {suggestions.dismissed === 1 ? 'suggestion' : 'suggestions'} again
+        </button>
+      {/if}
+    </div>
+  {/if}
 
   {#if settings}
     <div class="card stack">
@@ -197,6 +273,11 @@
   input[type='range'] {
     padding: 0;
     min-height: 24px;
+  }
+  .sug {
+    gap: 4px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
   }
   .ovrow {
     padding: 6px 0;

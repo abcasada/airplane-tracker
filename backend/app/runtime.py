@@ -270,30 +270,35 @@ class Runtime:
 
     # ---- pipeline ----------------------------------------------------------------------------
 
-    def classify_track(self, t: Track) -> None:
-        info = t.info
-        pa = info.plane_alert if info else None
-        stats = self.enricher.type_info(t.type_code)
+    def override_for(self, t: Track) -> bool | None:
         override = self.overrides.get(f"hex:{t.hex}")
         if override is None and t.registration:
             override = self.overrides.get(f"reg:{t.registration.upper()}")
+        return override
+
+    def classifier_inputs(self, t: Track, override: bool | None) -> Inputs:
+        info = t.info
+        pa = info.plane_alert if info else None
+        stats = self.enricher.type_info(t.type_code)
+        return Inputs(
+            hex=t.hex,
+            callsign=t.callsign,
+            registration=t.registration,
+            type_code=t.type_code,
+            owner_op=t.owner_op,
+            db_military=bool(t.api_db_flags & 1) or bool(info and info.db_military),
+            in_military_range=bool(info and info.in_military_range),
+            plane_alert_cmpg=pa.cmpg if pa else None,
+            plane_alert_operator=pa.operator if pa else None,
+            type_airframes=stats[0] if stats else 0,
+            type_military_share=stats[1] if stats else None,
+            callsign_is_airline=t.airline is not None,
+            override=override,
+        )
+
+    def classify_track(self, t: Track) -> None:
         t.classification = classify(
-            Inputs(
-                hex=t.hex,
-                callsign=t.callsign,
-                registration=t.registration,
-                type_code=t.type_code,
-                owner_op=t.owner_op,
-                db_military=bool(t.api_db_flags & 1) or bool(info and info.db_military),
-                in_military_range=bool(info and info.in_military_range),
-                plane_alert_cmpg=pa.cmpg if pa else None,
-                plane_alert_operator=pa.operator if pa else None,
-                type_airframes=stats[0] if stats else 0,
-                type_military_share=stats[1] if stats else None,
-                callsign_is_airline=t.airline is not None,
-                override=override,
-            ),
-            self.classifier,
+            self.classifier_inputs(t, self.override_for(t)), self.classifier
         )
 
     async def refresh_enrichment(self) -> None:

@@ -70,7 +70,7 @@ async def test_restore_remaps_ids_and_is_idempotent(authed: Harness) -> None:
     assert r.status_code == 200, r.text
     counts = r.json()
     assert counts["places"] == 2 and counts["filters"] == 1 and counts["filters_existing"] == 1
-    assert counts["exclusions"] == 2 and counts["overrides"] == 1 and counts["settings"] == 3
+    assert counts["exclusions"] == 2 and counts["overrides"] == 1 and counts["settings"] == 4
     places = {p["name"]: p for p in (await c.get("/api/places")).json()}
     assert places["Home"]["is_home"] is True
     new_range = places["Range"]["id"]

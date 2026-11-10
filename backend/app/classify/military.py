@@ -112,7 +112,7 @@ def _compiled_patterns(patterns: tuple[str, ...]) -> tuple[regex.Pattern[str], .
     return tuple(out)
 
 
-def _matches_keywords(text: str | None, words: list[str]) -> str | None:
+def match_keyword(text: str | None, words: list[str]) -> str | None:
     if not text:
         return None
     rx = _keyword_regex(tuple(words))
@@ -120,7 +120,7 @@ def _matches_keywords(text: str | None, words: list[str]) -> str | None:
     return m.group(0) if m else None
 
 
-def _callsign_prefix(callsign: str | None, prefixes: list[str]) -> str | None:
+def match_callsign_prefix(callsign: str | None, prefixes: list[str]) -> str | None:
     if not callsign:
         return None
     for p in sorted(prefixes, key=len, reverse=True):
@@ -159,9 +159,9 @@ def classify(i: Inputs, s: ClassifierSettings) -> Classification:
                 s.dual_use_max_weight * share,
                 f"type {i.type_code}: {round(share * 100)}% of airframes are military",
             )
-    if kw := _matches_keywords(i.owner_op, s.owner_keywords):
+    if kw := match_keyword(i.owner_op, s.owner_keywords):
         fire("owner_keyword", w.get("owner_keyword", 0.8), f'owner/operator mentions "{kw}"')
-    if p := _callsign_prefix(i.callsign, s.callsign_prefixes):
+    if p := match_callsign_prefix(i.callsign, s.callsign_prefixes):
         fire("callsign_prefix", w.get("callsign_prefix", 0.6), f"military callsign prefix {p}")
     elif (
         i.callsign
@@ -191,10 +191,10 @@ def classify(i: Inputs, s: ClassifierSettings) -> Classification:
     score = round(1.0 - remaining, 3)
 
     government = (i.plane_alert_cmpg or "").lower() == "gov" or bool(
-        _matches_keywords(i.owner_op, s.government_keywords)
+        match_keyword(i.owner_op, s.government_keywords)
     )
     police = (i.plane_alert_cmpg or "").lower() == "pol" or bool(
-        _matches_keywords(i.owner_op, s.police_keywords)
+        match_keyword(i.owner_op, s.police_keywords)
     )
     military = score >= s.threshold
     if i.override is not None:
