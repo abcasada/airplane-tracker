@@ -9,11 +9,15 @@ import pytest
 import respx
 
 from app.clock import FakeClock
+from app.filters.facts import LiveFacts
 from app.ingest.planner import QueryCircle
 from app.ingest.poller import Poller
-from app.sources.base import AreaQuery, SourceBatch, SourceError
+from app.ingest.recorder import read_batches
+from app.main import create_app
+from app.sources.base import AreaQuery, FeedSource, SourceBatch, SourceError
 from app.sources.opensky import OpenSkySource, bbox, credits_for, parse_states
 from app.sources.readsb import flyitaly
+from app.sources.receiver import ReceiverSource
 from app.sources.registry import build_sources
 from tests.conftest import make_settings
 
@@ -73,6 +77,87 @@ async def test_keyed_sources_are_enabled_only_when_configured(tmp_path: Path) ->
         ]  # fmt: skip
         only_id = make_settings(tmp_path, opensky_client_id="i")
         assert len(build_sources(only_id, http, FakeClock())) == 2
+        with_rx = make_settings(tmp_path, receiver_url=RX_URL, receiver_uat_url=UAT_URL)
+        rx = build_sources(with_rx, http, FakeClock())
+        assert [s.name for s in rx[:2]] == ["receiver", "receiver-uat"]
+        assert all(isinstance(s, FeedSource) for s in rx[:2])
+
+
+# ---- Local receiver -----------------------------------------------------------------------------
+
+RX_URL = "http://receiver.example/tar1090/data/aircraft.json"
+UAT_URL = "http://receiver.example/skyaware978/data/aircraft.json"
+
+
+def receiver_payload(now: float) -> dict[str, Any]:
+    """readsb aircraft.json shape ("now" in seconds, "aircraft"); values are synthetic."""
+    return {
+        "now": now, "messages": 1000,
+        "aircraft": [
+            {"hex": "a1b2c3", "type": "adsb_icao", "flight": "N123AB  ", "alt_baro": 2500,
+             "gs": 95.0, "track": 170.0, "lat": 38.85, "lon": -97.6, "seen_pos": 0.4, "seen": 0.1,
+             "category": "A1"},
+            {"hex": "a00001", "seen": 3.0, "rssi": -30.1},  # Mode S only, no position
+        ],
+    }  # fmt: skip
+
+
+@respx.mock
+async def test_receiver_uses_our_clock_and_marks_uat_as_adsb() -> None:
+    clock = FakeClock(T)
+    async with httpx.AsyncClient() as http:
+        rx = ReceiverSource("receiver", RX_URL, http, clock)
+        respx.get(RX_URL).mock(return_value=httpx.Response(200, json=receiver_payload(T - 90)))
+        batch = await rx.fetch_all()  # the receiver's clock is 90 s slow: ignored
+        o = next(o for o in batch.observations if o.hex == "a1b2c3")
+        assert o.pos_time == pytest.approx(T - 0.4) and o.seen_at == pytest.approx(T - 0.1)
+        assert batch.fetched_at == T and len(batch.observations) == 2
+        uat_payload = {
+            "now": T,
+            "aircraft": [
+                {
+                    "hex": "~2a0001",
+                    "lat": 38.8,
+                    "lon": -97.6,
+                    "alt_baro": 1500,
+                    "seen_pos": 1.0,
+                    "seen": 1.0,
+                }
+            ],
+        }
+        respx.get(UAT_URL).mock(return_value=httpx.Response(200, json=uat_payload))
+        uat = await ReceiverSource("receiver-uat", UAT_URL, http, clock).fetch_all()
+        assert uat.observations[0].pos_source == "adsb"
+        respx.get(RX_URL).mock(side_effect=httpx.ConnectError("refused"))
+        with pytest.raises(SourceError) as e:
+            await rx.fetch_all()
+        assert not e.value.is_client_error
+
+
+@respx.mock
+async def test_receiver_feeds_the_merge_every_second(tmp_path: Path) -> None:
+    clock = FakeClock(T)
+    app = create_app(make_settings(tmp_path, receiver_url=RX_URL), clock)
+    route = respx.get(RX_URL).mock(
+        side_effect=lambda _req: httpx.Response(200, json=receiver_payload(clock.now()))
+    )
+    async with app.router.lifespan_context(app):
+        rt = app.state.ctx.rt()
+        assert await rt.poller.tick() == pytest.approx(1.0)  # no places: only the receiver
+        track = rt.store.get("a1b2c3")
+        assert track is not None and track.sources(clock.now()) == ["receiver"]
+        facts = LiveFacts(track, rt.eval_context())
+        assert facts.get("seen_by_my_receiver") is True
+        assert facts.get("position_source") == "adsb"
+        for _ in range(5):
+            clock.advance(1)
+            await rt.poller.tick()
+        assert route.call_count == 6
+        st = next(s for s in rt.poller.status() if s["name"] == "receiver")
+        assert st["kind"] == "receiver" and st["healthy"] and st["last_aircraft"] == 2
+        # Read every second, recorded every 5 s.
+        rec = list(read_batches(tmp_path / "recordings", T - 1, T + 10))
+        assert [b for b, _ in rec] == [T, T + 5]
 
 
 # ---- OpenSky ------------------------------------------------------------------------------------

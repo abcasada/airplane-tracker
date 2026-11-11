@@ -1,7 +1,8 @@
 # Data sources: plan and sign-up checklist
 
 Status: approved (2026-10-31). Built: adsb.fi, adsb.lol, the multi-source merge with the Sources
-report (2026-11-10), the enrichment datasets and the FAA airspace search. Terms and prices were checked on 2026-10-31 and
+report, FlyItalyADSB, OpenSky and the local receiver source (all 2026-11-10), the enrichment
+datasets and the FAA airspace search. Terms and prices were checked on 2026-10-31 and
 change often; re-check each before signing up.
 
 Secrets (keys, tokens, passwords) go in `.env` or the `/data` volume, never in the repo. Keyed
@@ -26,7 +27,15 @@ worth keeping.
 
 ## Free live sources
 
-### 1. Your own receiver (planned hardware)
+### 1. Your own receiver (software built, hardware planned)
+
+- **Built 2026-11-10:** set `RECEIVER_URL` to the receiver's `aircraft.json` (ultrafeeder/tar1090:
+  `http://<pi>/tar1090/data/aircraft.json`, or readsb's `/data/aircraft.json`) and, for UAT,
+  `RECEIVER_UAT_URL` to dump978's (`http://<pi>/skyaware978/data/aircraft.json`). They're read
+  every second (`RECEIVER_INTERVAL_S`), parsed with the readsb parser and dated by the app's clock
+  (the Pi's clock doesn't matter). Source names `receiver` and `receiver-uat` drive the
+  `seen_by_my_receiver` filter field. Everything the receiver hears is tracked, but the Sources
+  report counts only aircraft inside the polled areas, so it compares like with like.
 
 - **Gives:** the best low-altitude coverage near home (pattern traffic, helicopters, low military),
   1-second updates, no rate limits, no terms.
@@ -214,8 +223,8 @@ stops cleanly at the cap. Responses are cached and never exported or committed.
 ## Order I'd build them
 
 1. **Multi-source merge** + Sources report, then FlyItalyADSB and OpenSky (you only need two free
-   keys).
-2. **Local receiver** source, as soon as your hardware runs (no keys).
+   keys). *Built.*
+2. **Local receiver** source, as soon as your hardware runs (no keys). *Built; waiting on hardware.*
 3. **FR24** gap-fill and lookups with the budget cap.
 4. **FAA registry + hexdb.io** enrichment.
 5. **FAA SWIM** schedule source and `filed_arrival` facts (after you approve the Solace library).

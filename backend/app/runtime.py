@@ -57,6 +57,9 @@ log = logging.getLogger(__name__)
 
 DATASET_CHECK_INTERVAL_S = 6 * 3600
 LIVE_PUBLISH_MIN_INTERVAL_S = 2.0
+# Receivers are read every second; recording every 5th second is plenty for replay.
+RECEIVER_RECORD_EVERY_S = 5.0
+FEED_EVAL_EVERY_S = 0.9
 
 
 class Runtime:
@@ -354,11 +357,15 @@ class Runtime:
     async def on_batch(self, batch: SourceBatch, circle: QueryCircle) -> None:
         async with self._lock:
             await self.ingest(batch, circle)
-            await asyncio.to_thread(self.recorder.write, batch)
+            every = RECEIVER_RECORD_EVERY_S if circle.tier == "feed" else 0.0
+            await asyncio.to_thread(self.recorder.write, batch, every)
             if self.source_stats.dirty:
                 self.source_stats.dirty = False
                 await self.ctx.db.set_json("source_stats", self.source_stats.to_json())
             now = self.ctx.clock.now()
+            last = self.last_eval_at
+            if circle.tier == "feed" and last is not None and 0 <= now - last < FEED_EVAL_EVERY_S:
+                return  # a receiver and its UAT twin both arrive every second: evaluate once
             # Before expiry, so an aircraft lost low near an airfield still counts as landed.
             events = flight_events.update(self.store.values(), self.airport_index, now)
             self.store.expire(now)

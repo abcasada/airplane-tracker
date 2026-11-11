@@ -158,7 +158,7 @@ services:
 Kinds:
 
 - **area** (point/radius APIs: adsb.fi, adsb.lol, FlyItalyADSB, OpenSky; FR24 later, on demand only)
-- **feed** (a receiver's `aircraft.json`: everything it hears, no query area, no rate limit)
+- **feed** (a receiver's `aircraft.json`: everything it hears, no query area, no rate limit). Read every second, dated by our clock, recorded every 5th second, and a feed batch triggers filter evaluation at most about once a second.
 - **schedule** (filed flight plans, e.g. FAA SWIM, §3.5)
 
 Enrichment plug-ins (routes, flight plans) have their own interface with a per-source budget guard. Paid ones plug in there without touching the engine.
@@ -647,7 +647,7 @@ Each phase ends usable, with tests passing and the container working. **The filt
 
 ### Phase 5 — Sources, ntfy, extras (re-planned v4, see SOURCES.md)
 - ntfy notifier (§9.1) and the military review page's list suggestions from your overrides.
-- Multi-source merge + Sources report (*done*); FlyItalyADSB and OpenSky (*done*); local receiver; FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
+- Multi-source merge + Sources report (*done*); FlyItalyADSB and OpenSky (*done*); local receiver (*done*, `RECEIVER_URL`, optional `RECEIVER_UAT_URL`); FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
 - Dropped: Web Push backup channel (ntfy instead) and GHCR image releases (your decision).
 - Backup/restore of places and filters. *Backup/restore done:* Settings → Backup downloads one JSON file (places, filters, mutes, settings, military overrides; never credentials). Restore merges, remaps place ids inside filters and mutes, skips places and filters that already exist, and keeps this install's home.
 

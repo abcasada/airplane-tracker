@@ -50,14 +50,22 @@ class Recorder:
         self.retention_days = retention_days
         self.enabled = True
         self.bytes_written = 0
+        self.last_write: dict[str, float] = {}  # stream → fetched_at of its last recorded batch
 
     def _path(self, ts: float) -> Path:
         dt = datetime.fromtimestamp(ts, UTC)
         return self.root / dt.strftime("%Y-%m-%d") / f"{dt:%H}.ndjson.gz"
 
-    def write(self, batch: SourceBatch) -> None:
+    def write(self, batch: SourceBatch, every_s: float = 0.0) -> None:
+        """`every_s` thins a fast stream (a receiver read every second) per source, so a day of
+        recordings stays the size polling produces."""
         if not self.enabled or not batch.observations:
             return
+        if every_s > 0:
+            last = self.last_write.get(batch.source)
+            if last is not None and 0 <= batch.fetched_at - last < every_s:
+                return
+            self.last_write[batch.source] = batch.fetched_at
         path = self._path(batch.fetched_at)
         path.parent.mkdir(parents=True, exist_ok=True)
         lines = "".join(
