@@ -32,7 +32,7 @@ from app.filters.models import (
 from app.filters.repo import FilterRepo
 from app.history import SightingsBook, day_of
 from app.ingest.planner import PlannerConfig, QueryCircle, plan
-from app.ingest.poller import Poller
+from app.ingest.poller import Poller, SourcePrefs
 from app.ingest.recorder import Recorder
 from app.ingest.sourcestats import SourceStats
 from app.live.broker import Broker
@@ -121,6 +121,7 @@ class Runtime:
         await self.watch.refresh(self.filters)
         await self.alerts.load()
         self.source_stats.load(await self.ctx.db.get_json("source_stats", {}))
+        await self.reload_sources()
         if self.ctx.settings.run_background:
             self._spawn(self.poller.run(), "poller")
             self._spawn(self._route_loop(), "routes")
@@ -221,6 +222,10 @@ class Runtime:
         self.alerts.settings = AlertingSettings.model_validate(
             await self.ctx.db.get_json("alerting", {})
         )
+
+    async def reload_sources(self) -> None:
+        prefs = SourcePrefs.model_validate(await self.ctx.db.get_json("sources", {}))
+        self.poller.set_disabled(prefs.disabled)
 
     async def reload_classifier(self) -> None:
         self.classifier = ClassifierSettings.model_validate(

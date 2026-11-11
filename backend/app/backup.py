@@ -22,6 +22,7 @@ from app.filters.exclusions import ExclusionIn, ExclusionRepo
 from app.filters.facts import ANY_VIEWPOINT
 from app.filters.models import Condition, FilterDefinition, FilterIn, Group
 from app.filters.repo import FilterRepo
+from app.ingest.poller import SourcePrefs
 from app.places.models import Place, PlaceIn
 from app.places.repo import PlaceRepo
 from app.predict.engine import PredictionSettings
@@ -32,6 +33,7 @@ SETTINGS: dict[str, type[BaseModel]] = {
     "prediction": PredictionSettings,
     "classifier": ClassifierSettings,
     "military_suggestions": SuggestionPrefs,
+    "sources": SourcePrefs,
 }
 
 

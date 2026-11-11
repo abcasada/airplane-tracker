@@ -27,9 +27,12 @@ phone through the user's own **ntfy** server. One Docker container; PWA web UI w
   - Opt-in sources: FlyItalyADSB (`FLYITALY_API_KEY`), OpenSky (`OPENSKY_CLIENT_ID/SECRET`,
     credit-metered), local receiver (`RECEIVER_URL`, optional `RECEIVER_UAT_URL`).
     Prediction now runs at most every 5 s (`MIN_CYCLE_S`) so 1 Hz data doesn't change hysteresis.
+    Each source can be switched off/on in the Sources report (setting `sources`).
+  - Suggestion settings: minimum agreeing marks (default 3) and opt-in "bring back a dismissed
+    suggestion once its evidence doubles".
   - FR24-style simple mode in the filter editor (`frontend/src/lib/simple.ts`), lossless
     round-trip to the same expression tree; route origin/destination autocomplete airports.
-- **Last verified 2026-11-10 (integration branch):** 178 backend tests, ruff and `mypy --strict`
+- **Last verified 2026-11-10 (integration branch):** 182 backend tests, ruff and `mypy --strict`
   clean; frontend check, 26 tests and build clean (host has no Node: run npm in `node:22-slim`).
   Replay fixture metrics unchanged. **No new UI has been looked at in a browser yet**, and the
   Docker image hasn't been rebuilt with these changes.
@@ -77,17 +80,18 @@ feeding it or emailing them is the way in).
 3. FAA SWIM schedule source (needs registration).
 4. Tune prediction on ≥2 weeks of real recordings (`python -m app.replay`); none exist yet.
 
-## Open questions from the 2026-11-10 work
+## Decisions from 2026-11-10
 
-- **Simple mode:** add a "Visible from place" row? Simple is the default view for filters that fit
-  (remembered per device): OK, or default to Advanced? Two conditions on one field stay Advanced.
-- **Military suggestions:** registration-pattern suggestions not built; minimum 3 agreeing marks is
-  a constant (make it a setting?); dismissed suggestions stay hidden even with new evidence.
-- **Sources:** OpenSky's terms name research/education/non-profit use, not hobby use: the user must
-  confirm before setting keys. adsb.lol is now polled continuously (≤50% budget), not only on
-  failover: add a per-source off switch? Recordings grow with each source. FlyItalyADSB limits come
-  from their docs (one page says 100 req/min); the Sources report will show real usage. Use the Pi's
-  IP, not `pi.local`, for `RECEIVER_URL`. Check "Filter evaluation" ms once 1 Hz receiver data flows.
+- Keep OpenSky (the user accepts its terms for personal use). adsb.lol polled continuously, with a
+  per-source off switch. Recording growth with 14-day retention is fine (check DB size after a week).
+- Simple mode: default view stays Simple when the filter fits; **no** "Visible from place" row —
+  the app is about what is at or headed to the airport or bombing range, not what's visible from
+  home. Two conditions on one field stay in Advanced.
+- Military suggestions: no registration-pattern suggestions; minimum marks is a setting; dismissed
+  stay dismissed unless the opt-in "evidence doubled" setting is on; restore replaces dismissals.
+- Notes: FlyItalyADSB limits come from their docs (one page says 100 req/min); the Sources report
+  will show real usage. Use the Pi's IP, not `pi.local`, for `RECEIVER_URL`. Check "Filter
+  evaluation" ms once 1 Hz receiver data flows.
 
 ## Gotchas
 

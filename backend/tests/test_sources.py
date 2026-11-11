@@ -249,3 +249,20 @@ async def test_sources_report_api_counts_only_polled_areas(authed: Harness) -> N
     sug = (await authed.client.get("/api/fields/suggest?source=sources&q=rec")).json()
     assert [s["value"] for s in sug] == ["receiver", "receiver-uat"]
     assert sug[0]["label"] == "not configured"
+
+
+async def test_switch_a_source_off_and_back_on(authed: Harness) -> None:
+    c, rt = authed.client, authed.ctx.rt()
+    r = await c.put("/api/sources/adsb.lol", json={"enabled": False})
+    assert r.status_code == 200, r.text
+    status_ = {s["name"]: s["enabled"] for s in (await c.get("/api/sources")).json()["status"]}
+    assert status_ == {"adsb.fi": True, "adsb.lol": False}
+    assert (await authed.ctx.db.get_json("sources")) == {"disabled": ["adsb.lol"]}
+    backup = (await c.get("/api/backup")).json()
+    assert backup["settings"]["sources"] == {"disabled": ["adsb.lol"]}
+    assert (await c.put("/api/sources/nope", json={"enabled": False})).status_code == 404
+    await c.put("/api/sources/adsb.lol", json={"enabled": True})
+    assert all(s.enabled for s in rt.poller.slots)
+    # Restoring the backup switches it off again.
+    assert (await c.post("/api/backup/restore", json=backup)).status_code == 200
+    assert [s.enabled for s in rt.poller.slots] == [True, False]

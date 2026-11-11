@@ -4,12 +4,14 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app import USER_AGENT, __version__
 from app.auth.deps import Ctx, CurrentUser
 from app.enrich.photos import planespotters_photo
 from app.filters.facts import LiveFacts
 from app.filters.fields import FIELDS
+from app.ingest.poller import SourcePrefs
 from app.runtime import aircraft_summary
 
 router = APIRouter(prefix="/api", tags=["live"])
@@ -132,6 +134,26 @@ async def sources_report(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
     status_ = rt.poller.status()
     report = rt.source_stats.report(ctx.clock.now(), [s["name"] for s in status_])
     return {"status": status_, **report}
+
+
+class SourceToggle(BaseModel):
+    enabled: bool
+
+
+@router.put("/sources/{name}")
+async def toggle_source(
+    name: str, body: SourceToggle, ctx: Ctx, user: CurrentUser
+) -> dict[str, Any]:
+    """Switch a configured source on or off (it stays configured; keys still come from env)."""
+    rt = ctx.rt()
+    if name not in {s.name for s in rt.poller.slots}:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such source")
+    prefs = SourcePrefs.model_validate(await ctx.db.get_json("sources", {}))
+    off = [n for n in prefs.disabled if n != name] + ([] if body.enabled else [name])
+    await ctx.db.set_json("sources", SourcePrefs(disabled=off).model_dump())
+    await ctx.db.audit(ctx.clock.now(), user.username, "sources.toggle", {name: body.enabled})
+    await rt.reload_sources()
+    return {"name": name, "enabled": body.enabled}
 
 
 @router.post("/datasets/refresh")

@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from app import geo
 from app.clock import Clock
 from app.sources.base import (
@@ -46,6 +48,12 @@ WATCH_CIRCLE = QueryCircle("watch", 0.0, 0.0, 0.0, WATCH_INTERVAL_S, "watch")
 FEED_CIRCLE = QueryCircle("feed", 0.0, 0.0, 0.0, 1.0, "feed")
 
 
+class SourcePrefs(BaseModel):
+    """Stored under the `sources` setting; included in backups. Sources are on by default."""
+
+    disabled: list[str] = Field(default_factory=list, max_length=50)
+
+
 def request_cost(src: Any, query: AreaQuery) -> float:
     return float(src.cost(query)) if isinstance(src, MeteredSource) else 1.0
 
@@ -60,6 +68,7 @@ class SourceSlot:
     source: AreaSource | FeedSource
     bucket: TokenBucket | None  # None: no rate limit (own receiver)
     breaker: CircuitBreaker = field(default_factory=CircuitBreaker)
+    enabled: bool = True
     requests: int = 0
     errors: int = 0
     day: int = 0
@@ -127,6 +136,11 @@ class Poller:
             return SourceSlot(src, None)
         burst = max(1.0, src.max_cost) if isinstance(src, MeteredSource) else 1.0
         return SourceSlot(src, TokenBucket(src.max_rate_per_s * BUDGET_FRACTION, burst))
+
+    def set_disabled(self, names: list[str]) -> None:
+        off = set(names)
+        for s in self.slots:
+            s.enabled = s.name not in off
 
     def _interval(self, slot: SourceSlot, c: QueryCircle) -> float:
         if slot.empty_streak.get(c.key, 0) >= IDLE_AFTER_EMPTY_POLLS:
@@ -221,6 +235,9 @@ class Poller:
         return max(slot.next_due[FEED_CIRCLE.key], slot.breaker.open_until)
 
     async def poll_slot(self, slot: SourceSlot) -> float:
+        if not slot.enabled:
+            slot.next_due.clear()  # poll right away when switched back on
+            return self.clock.now() + 5.0
         if slot.is_feed:
             return await self.poll_feed(slot)
         circles = self.circles()
@@ -243,7 +260,7 @@ class Poller:
         """A lookup: the first healthy lookup source answers; each request spends its budget."""
         for slot in self.slots:
             src = slot.source
-            if not isinstance(src, LookupSource) or slot.bucket is None:
+            if not isinstance(src, LookupSource) or slot.bucket is None or not slot.enabled:
                 continue
             now = self.clock.now()
             if slot.breaker.is_open(now):
@@ -318,6 +335,7 @@ class Poller:
                 {
                     "name": s.name,
                     "kind": "receiver" if s.is_feed else "area",
+                    "enabled": s.enabled,
                     "healthy": not s.breaker.is_open(now),
                     "open_for_s": max(0.0, s.breaker.open_until - now),
                     "last_ok_at": s.breaker.last_ok_at,

@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { get } from '../lib/api'
+  import { errorMessage, get, put } from '../lib/api'
+  import { toast } from '../lib/toast.svelte'
 
   interface SourceStatus {
     name: string
     kind: 'area' | 'receiver'
+    enabled: boolean
     healthy: boolean
     open_for_s: number
     last_error: string | null
@@ -45,6 +47,19 @@
     return () => clearInterval(t)
   })
 
+  async function toggle(s: SourceStatus) {
+    const on = !s.enabled
+    if (!on && r?.status.filter((x) => x.enabled && x.kind === 'area').length === 1 && s.kind === 'area') {
+      if (!confirm(`${s.name} is the only area source switched on. Turn it off anyway?`)) return
+    }
+    try {
+      await put(`/api/sources/${encodeURIComponent(s.name)}`, { enabled: on })
+    } catch (e) {
+      toast(errorMessage(e), 'error')
+    }
+    await load()
+  }
+
   function rate(s: SourceStatus): string {
     if (s.budget_per_s == null) return s.interval_s ? `every ${s.interval_s} s, no limit` : 'no limit'
     if (s.budget_unit === 'credit') {
@@ -84,10 +99,16 @@
             <tr>
               <td>{name}{#if s?.kind === 'receiver'} <span class="muted small">(your receiver)</span>{/if}</td>
               <td>
-                {#if !s}<span class="muted">not enabled</span>
+                {#if !s}<span class="muted">not configured</span>
+                {:else if !s.enabled}<span class="muted">○ off</span>
                 {:else if s.healthy}<span class="ok">● ok</span>
                 {:else}<span class="error">● backing off {Math.round(s.open_for_s)} s</span>{/if}
-                {#if s?.last_error}<div class="muted small">{s.last_error}</div>{/if}
+                {#if s?.enabled && s.last_error}<div class="muted small">{s.last_error}</div>{/if}
+                {#if s}
+                  <div>
+                    <button class="small" onclick={() => toggle(s)}>{s.enabled ? 'Turn off' : 'Turn on'}</button>
+                  </div>
+                {/if}
               </td>
               <td class="small">
                 {#if s}
@@ -113,6 +134,7 @@
       ({windowKey === 'last_hour' ? 'last 60–75 min' : 'last 24 h'}). "Only this source" counts aircraft no other
       source reported in that time: what you'd lose without it. Lookups of followed aircraft and receiver
       reports outside the polled areas aren't counted. Budget: at most half of each source's published limit.
+      A source switched off here stays configured and can be turned back on at any time.
     </p>
     {#if r.days.length}
       <h3>Unique aircraft per day (UTC)</h3>

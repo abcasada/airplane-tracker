@@ -38,4 +38,5 @@ async def restore(
     await rt.reload_classifier()
     await rt.reload_prediction()
     await rt.reload_alerting()
+    await rt.reload_sources()
     return counts

@@ -7,7 +7,8 @@ change often; re-check each before signing up.
 
 Secrets (keys, tokens, passwords) go in `.env` or the `/data` volume, never in the repo. Keyed
 sources turn on when their keys are set. Every source shows its status, budget use, errors and
-unique contribution in the Sources report on the System page.
+unique contribution in the Sources report on the System page, where each source can also be
+switched off and on.
 
 ## How the sources fit together
 
