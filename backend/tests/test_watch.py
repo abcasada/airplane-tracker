@@ -168,6 +168,7 @@ async def test_registration_autocomplete_and_nearest_airport_fields(authed: Harn
     assert r.json()[0]["value"] == "KDOV"
     fields = {f["key"]: f for f in (await authed.client.get("/api/fields")).json()["fields"]}
     assert fields["registration"]["suggest"] == "registration"
+    assert fields["route_origin"]["suggest"] == fields["route_destination"]["suggest"] == "airports"
     assert {"nearest_airport", "nearest_airport_nm", "near_description"} <= fields.keys()
 
 

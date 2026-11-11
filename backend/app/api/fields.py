@@ -5,6 +5,7 @@ from fastapi import APIRouter, Query
 from app.alerts.format import TEMPLATE_KEYS
 from app.auth.deps import Ctx, CurrentUser
 from app.filters.fields import catalog
+from app.sources.base import KNOWN_SOURCES
 
 router = APIRouter(prefix="/api/fields", tags=["fields"])
 
@@ -82,6 +83,13 @@ async def suggest(
              "label": ", ".join(x for x in (r["name"], r["municipality"]) if x)}
             for r in rows
         ]  # fmt: skip
+    if source == "sources":
+        enabled = {s["name"] for s in rt.poller.status()}
+        return [
+            {"value": n, "label": "enabled" if n in enabled else "not configured"}
+            for n in KNOWN_SOURCES
+            if term.lower() in n
+        ]
     if source in ("callsign", "operator"):
         seen: dict[str, str] = {}
         ectx = rt.eval_context()
