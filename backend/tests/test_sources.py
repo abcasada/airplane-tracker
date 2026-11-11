@@ -142,6 +142,17 @@ def test_merge_freshest_position_wins_and_db_fields_fill_in() -> None:
     assert track.sources(T + 62) == ["receiver"]
 
 
+def test_an_older_report_with_a_newer_position_still_moves_the_track() -> None:
+    """The receiver hears a non-ADS-B aircraft (Mode S: fresh, no position); an aggregator's
+    MLAT fix arrives a few seconds older but is the only, and newest, position."""
+    store = TrackStore()
+    store.update(obs("adsb.fi", T, pos_source="mlat", gs_kt=300))
+    store.update(Observation(hex="ae1234", source="receiver", seen_at=T + 9, alt_baro_ft=5100))
+    track, _ = store.update(obs("adsb.fi", T + 5, lat=38.85, pos_source="mlat", gs_kt=310))
+    assert track.lat == 38.85 and track.pos_time == T + 5 and track.gs_kt == 310
+    assert track.last_seen == T + 9
+
+
 def test_history_is_spaced_when_reports_arrive_every_second() -> None:
     store = TrackStore()
     for i in range(30):

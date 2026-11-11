@@ -147,7 +147,7 @@ services:
 
 **Merge rules** (`tracks/store.py`, built 2026-11-10): every batch from every source goes through the same track store.
 
-- The freshest position wins (by position time). State (altitude, speed, squawk…) comes from the freshest report; a report more than 2 s older than what the track has (a slower source) only fills in what's missing (database fields, callsign, category).
+- The freshest position wins (by position time). State (altitude, speed, squawk…) comes from the freshest report; a report more than 2 s older than what the track has (a slower source) only fills in what's missing (database fields, callsign, category), unless it carries a newer position (e.g. an aggregator's MLAT fix for an aircraft the receiver hears only as Mode S).
 - Database fields (registration, type, owner, year, `dbFlags`) are only ever filled in, never cleared by a source that lacks them.
 - Each track remembers when each source last heard it: filter fields `sources` (heard in the last 60 s) and `seen_by_my_receiver`.
 - History points are kept ≥4 s apart, so 40 points still span ≥2.5 min when positions arrive every second.

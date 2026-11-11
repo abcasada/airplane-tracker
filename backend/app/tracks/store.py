@@ -110,7 +110,12 @@ class Track:
         database fields are only ever filled in, never cleared by a source that lacks them."""
         if obs.seen_at > self.heard_by.get(obs.source, -1.0):
             self.heard_by[obs.source] = obs.seen_at
-        stale = self.updates > 0 and obs.seen_at < self.last_seen - STALE_AFTER_S
+        newer_pos = obs.pos_time is not None and (
+            self.pos_time is None or obs.pos_time > self.pos_time
+        )
+        # A report with the freshest position is never stale, e.g. an aggregator's MLAT fix for
+        # an aircraft the receiver hears only as Mode S (fresh, but without a position).
+        stale = self.updates > 0 and obs.seen_at < self.last_seen - STALE_AFTER_S and not newer_pos
         self.updates += 1
         self._apply_db(obs)
         if stale:
@@ -122,7 +127,7 @@ class Track:
         fresh = obs.seen_at > self.last_seen or self.updates == 1
         self.last_seen = max(self.last_seen, obs.seen_at)
         self.source = obs.source
-        if obs.pos_time is not None and (self.pos_time is None or obs.pos_time > self.pos_time):
+        if newer_pos and obs.pos_time is not None:
             self.lat, self.lon, self.pos_time = obs.lat, obs.lon, obs.pos_time
             self.pos_source = obs.pos_source
             last = self.history[-1].t if self.history else None
