@@ -26,7 +26,7 @@ from app.filters.fields import FIELDS
 from app.filters.models import FilterDefinition
 from app.history import SightingsBook
 from app.ingest.recorder import read_batches
-from app.predict.engine import Predictor
+from app.predict.engine import MIN_CYCLE_S, Predictor
 from app.sources.base import Observation
 from app.tracks.events import FlightEvent
 
@@ -296,7 +296,9 @@ class Backtester:
             replay = Replay(
                 rt.places,
                 enrich=rt.enrich_track,
-                predictor=Predictor(rt.predictor.settings, paths=False) if predict else None,
+                predictor=Predictor(rt.predictor.settings, paths=False, min_cycle_s=MIN_CYCLE_S)
+                if predict
+                else None,
                 runways=rt.runways,
                 tz=rt.alerts.tz,
                 history=SightingsBook(rt.ctx.db, read_only=True),

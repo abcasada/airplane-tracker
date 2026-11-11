@@ -105,7 +105,7 @@ services:
 
 ## 3. Data sources
 
-> **v4 proposal (2026-10-31), pending your answers:** use every free source plus your own receiver, merged by ICAO hex, and use paid sources (Flightradar24 first) only on demand for aircraft a filter cares about. The full list, terms, feeder perks and a sign-up checklist are in **[SOURCES.md](SOURCES.md)**. Changes to the design below:
+> **v4 (2026-10-31, approved; merge built 2026-11-10):** use every free source plus your own receiver, merged by ICAO hex, and use paid sources (Flightradar24 first) only on demand for aircraft a filter cares about. The full list, terms, feeder perks and a sign-up checklist are in **[SOURCES.md](SOURCES.md)**. Changes to the design below:
 > - **Failover becomes merge.** Every enabled live source is polled within its own budget (≤50% of its published limit) and merged by hex; the freshest position wins. Each aircraft records which sources saw it (`sources` and `seen_by_my_receiver` fields), and a **Sources report** shows how many aircraft each source saw that no other did.
 > - **Local receiver** (readsb/ultrafeeder `aircraft.json`, optional 978 MHz UAT) is a source with no rate limit, polled every second over the Docker network.
 > - **Paid sources are never polled continuously.** They answer only for filter candidates that the free feeds lost, and on-demand lookups, behind a monthly budget cap with a credit meter.
@@ -116,9 +116,10 @@ services:
 | Source | Access | Rate limit | Terms | Live check | Verdict |
 |---|---|---|---|---|---|
 | **adsb.fi Open Data** — `opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{nm}` (≤250 nm) | No key | **1 req/s**; 4xx responses count toward a **temporary IP block** | Personal, **non-commercial**; **must cite and link adsb.fi** | 200 OK. Has `r`, `t`, `desc`, `ownOp`, `year`, **`dbFlags`**, `nav_heading`, `nav_altitude_mcp`, vertical rates, `squawk`, `emergency`, `category`. | **Primary** |
-| **adsb.lol** — `api.adsb.lol/v2/point/{lat}/{lon}/{nm}` (≤250 nm) | No key today (a key "obtained by feeding" is planned) | Unpublished, "dynamic" | **ODbL**; contact them for production use | 200 OK, same JSON shape | **Failover** |
+| **adsb.lol** — `api.adsb.lol/v2/point/{lat}/{lon}/{nm}` (≤250 nm) | No key today (a key "obtained by feeding" is planned) | Unpublished, "dynamic" | **ODbL**; contact them for production use | 200 OK, same JSON shape | **Merged** (was failover) |
 | airplanes.live | — | — | — | **403** "Please contact us…" | Excluded |
-| OpenSky Network | OAuth2 | 4,000 credits/day registered | Non-commercial | not polled | Possible later fallback. No type or registration. |
+| **FlyItalyADSB** — `api.flyitalyadsb.com/v2/lat/{lat}/lon/{lon}/dist/{km}` (≤500 km free) | Free key (`X-Api-Key`) | 30 req/min, 300,000/month per key | CC BY-SA 4.0, one-line credit | not polled (mock-tested only) | **Merged, opt-in** (`FLYITALY_API_KEY`) |
+| **OpenSky Network** — `opensky-network.org/api/states/all` (bounding box) | OAuth2 client credentials | 4,000 credits/day (8,000 as a feeder); 1–4 credits per box by area | Non-commercial (research/education); cite OpenSky | not polled (mock-tested only) | **Merged, opt-in** (`OPENSKY_CLIENT_ID`/`_SECRET`), credit-metered. No type or registration. |
 
 **Coverage around Salina** (live check, 80 nm around KSLN on 2026-10-15):
 
@@ -134,18 +135,30 @@ services:
   - It also gets an **outer circle** (radius + horizon × 8 nm/min, ≈ 85 nm for a 10-min horizon, polled every 30 s).
   - Everything slows to 60 s when nothing is in reach.
   - Overlapping circles merge. Places within ~15 nm of each other (home, KSLN, the range) collapse into one inner and one outer query.
-- Token-bucket budget ≤0.5 req/s per source (half of adsb.fi's limit). The Salina setup uses ~0.13 req/s.
-- Circuit breaker per source, failover adsb.fi → adsb.lol. Exponential backoff on any 4xx/429.
+- **Every enabled source is polled for every circle, each on its own schedule** (one asyncio loop per source, so a slow source never delays the others). Each has its own token bucket at ≤50% of its published sustained limit, and its own circuit breaker with exponential backoff on any 4xx/429 (30 s doubling to 5 min). The Salina setup uses ~0.13 req/s per source.
+- A source whose budget can't poll every circle at its interval (credit- or month-limited ones) skips circles that lie inside another circle, so it still covers the whole area, just less often.
+- Credit-metered sources (OpenSky) declare a cost per request; the bucket counts credits, not requests. A source that says how long to wait (OpenSky's `X-Rate-Limit-Retry-After-Seconds`) is left alone that long, even past the 5-minute cap.
+- Lookups of followed aircraft (`watch.py`) are not merged: the first healthy lookup source answers, spending its own budget.
 - Bandwidth: a few KB per poll around Salina (tens of MB/day). Even very busy JFK was 32–38 KB per 80 nm poll.
 
 ### 3.3 Pluggable source interface
 
 `Source` protocol → normalized `Observation` (nm, kt, ft, ft/min, degrees true, UTC epoch seconds). The merge layer keys on ICAO hex and keeps the freshest position.
 
+**Merge rules** (`tracks/store.py`, built 2026-11-10): every batch from every source goes through the same track store.
+
+- The freshest position wins (by position time). State (altitude, speed, squawk…) comes from the freshest report; a report more than 2 s older than what the track has (a slower source) only fills in what's missing (database fields, callsign, category), unless it carries a newer position (e.g. an aggregator's MLAT fix for an aircraft the receiver hears only as Mode S).
+- Database fields (registration, type, owner, year, `dbFlags`) are only ever filled in, never cleared by a source that lacks them.
+- Each track remembers when each source last heard it: filter fields `sources` (heard in the last 60 s) and `seen_by_my_receiver`.
+- History points are kept ≥4 s apart, so 40 points still span ≥2.5 min when positions arrive every second.
+- Prediction runs at most every 5 s (`MIN_CYCLE_S`), live and in replay: its on/off hysteresis counts cycles and was tuned on ~10 s polling, and merged sources deliver batches faster.
+
+**Sources report** (`ingest/sourcestats.py`, System page): per source, status, use vs budget, aircraft seen and aircraft *only* that source saw, for the last hour, the last 24 h and per UTC day (14 days, persisted). Only positions inside the polled circles count, so receiver reports from beyond the areas and worldwide lookups don't inflate a source. Memory: 15-minute buckets of hex → source bitmask for 24 h, capped at 20,000 aircraft per bucket.
+
 Kinds:
 
-- **area** (point/radius APIs: adsb.fi, adsb.lol, future OpenSky/FR24)
-- **local** (a receiver's `aircraft.json`, if you ever add one)
+- **area** (point/radius APIs: adsb.fi, adsb.lol, FlyItalyADSB, OpenSky; FR24 later, on demand only)
+- **feed** (a receiver's `aircraft.json`: everything it hears, no query area, no rate limit). Read every second, dated by our clock, recorded every 5th second, and a feed batch triggers filter evaluation at most about once a second.
 - **schedule** (filed flight plans, e.g. FAA SWIM, §3.5)
 
 Enrichment plug-ins (routes, flight plans) have their own interface with a per-source budget guard. Paid ones plug in there without touching the engine.
@@ -639,7 +652,7 @@ Each phase ends usable, with tests passing and the container working. **The filt
 
 ### Phase 5 — Sources, ntfy, extras (re-planned v4, see SOURCES.md)
 - ntfy notifier (§9.1) and the military review page's list suggestions from your overrides. *Both done* (suggestions: §5.2).
-- Multi-source merge + Sources report; FlyItalyADSB and OpenSky; local receiver; FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
+- Multi-source merge + Sources report (*done*); FlyItalyADSB and OpenSky (*done*); local receiver (*done*, `RECEIVER_URL`, optional `RECEIVER_UAT_URL`); FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
 - Dropped: Web Push backup channel (ntfy instead) and GHCR image releases (your decision).
 - Backup/restore of places and filters. *Backup/restore done:* Settings → Backup downloads one JSON file (places, filters, mutes, settings, military overrides; never credentials). Restore merges, remaps place ids inside filters and mutes, skips places and filters that already exist, and keeps this install's home.
 

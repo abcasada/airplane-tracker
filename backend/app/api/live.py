@@ -27,6 +27,7 @@ async def aircraft(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
         "now": ectx.now,
         "home_id": home.id if home else None,
         "aircraft": rt.summaries(rt.facts_for_all(ectx)),
+        "sources": [s.name for s in rt.poller.slots],  # enabled, for the attribution line
     }
 
 
@@ -122,6 +123,15 @@ async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
         },
         "background": ctx.settings.run_background,
     }
+
+
+@router.get("/sources")
+async def sources_report(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
+    """Per source: status, use vs budget, and aircraft seen / seen by no other source."""
+    rt = ctx.rt()
+    status_ = rt.poller.status()
+    report = rt.source_stats.report(ctx.clock.now(), [s["name"] for s in status_])
+    return {"status": status_, **report}
 
 
 @router.post("/datasets/refresh")

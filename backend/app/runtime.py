@@ -34,6 +34,7 @@ from app.history import SightingsBook, day_of
 from app.ingest.planner import PlannerConfig, QueryCircle, plan
 from app.ingest.poller import Poller
 from app.ingest.recorder import Recorder
+from app.ingest.sourcestats import SourceStats
 from app.live.broker import Broker
 from app.notify.actions import MUTE_SECONDS
 from app.notify.base import Notifier
@@ -42,10 +43,10 @@ from app.places.models import Place
 from app.places.nearby import AirportIndex
 from app.places.repo import PlaceRepo
 from app.predict.arrival import Runway, runways_for
-from app.predict.engine import PredictionSettings, PredictionState, Predictor
+from app.predict.engine import MIN_CYCLE_S, PredictionSettings, PredictionState, Predictor
 from app.replay.backtest import Backtester
-from app.sources import readsb
 from app.sources.base import SourceBatch
+from app.sources.registry import build_sources
 from app.tracks import events as flight_events
 from app.tracks.store import Track, TrackStore
 from app.watch import Watchlist
@@ -56,6 +57,9 @@ log = logging.getLogger(__name__)
 
 DATASET_CHECK_INTERVAL_S = 6 * 3600
 LIVE_PUBLISH_MIN_INTERVAL_S = 2.0
+# Receivers are read every second; recording every 5th second is plenty for replay.
+RECEIVER_RECORD_EVERY_S = 5.0
+FEED_EVAL_EVERY_S = 0.9
 
 
 class Runtime:
@@ -82,14 +86,15 @@ class Runtime:
             public_url=ctx.settings.public_url,
             on_event=self.broker.publish,
         )
-        self.predictor = Predictor()
+        self.predictor = Predictor(min_cycle_s=MIN_CYCLE_S)
         self.backtester = Backtester(self)
         self.sightings = SightingsBook(ctx.db)
         self.planner_cfg = PlannerConfig(outer_enabled=True)
         self.watch = Watchlist(ctx.db)
         self.airport_index = AirportIndex()
+        self.source_stats = SourceStats()
         self.poller = Poller(
-            [readsb.adsbfi(ctx.http, ctx.clock), readsb.adsblol(ctx.http, ctx.clock)],
+            build_sources(ctx.settings, ctx.http, ctx.clock),
             ctx.clock,
             self.circles,
             self.on_batch,
@@ -115,6 +120,7 @@ class Runtime:
         await self.airport_index.load(self.ctx.db)
         await self.watch.refresh(self.filters)
         await self.alerts.load()
+        self.source_stats.load(await self.ctx.db.get_json("source_stats", {}))
         if self.ctx.settings.run_background:
             self._spawn(self.poller.run(), "poller")
             self._spawn(self._route_loop(), "routes")
@@ -317,8 +323,16 @@ class Runtime:
         for t in self.store.values():
             self.classify_track(t)
 
-    async def ingest(self, batch: SourceBatch) -> None:
+    async def ingest(self, batch: SourceBatch, circle: QueryCircle | None = None) -> None:
+        # Lookups of followed aircraft cover the whole world, so they'd skew the Sources report;
+        # it counts only positions inside the polled circles, where every source was asked.
+        counted = self.poller.last_circles if circle is not None and circle.tier != "watch" else []
+        now = self.ctx.clock.now()
         for obs in batch.observations:
+            if counted and obs.lat is not None and obs.lon is not None:
+                lat, lon = obs.lat, obs.lon
+                if any(geo.haversine_nm(c.lat, c.lon, lat, lon) <= c.radius_nm for c in counted):
+                    self.source_stats.add(obs.source, obs.hex, now)
             track, is_new = self.store.update(obs)
             await self.enrich_track(track, is_new)
             self.routes.want(track.callsign, track.lat, track.lon)
@@ -347,9 +361,16 @@ class Runtime:
 
     async def on_batch(self, batch: SourceBatch, circle: QueryCircle) -> None:
         async with self._lock:
-            await self.ingest(batch)
-            await asyncio.to_thread(self.recorder.write, batch)
+            await self.ingest(batch, circle)
+            every = RECEIVER_RECORD_EVERY_S if circle.tier == "feed" else 0.0
+            await asyncio.to_thread(self.recorder.write, batch, every)
+            if self.source_stats.dirty:
+                self.source_stats.dirty = False
+                await self.ctx.db.set_json("source_stats", self.source_stats.to_json())
             now = self.ctx.clock.now()
+            last = self.last_eval_at
+            if circle.tier == "feed" and last is not None and 0 <= now - last < FEED_EVAL_EVERY_S:
+                return  # a receiver and its UAT twin both arrive every second: evaluate once
             # Before expiry, so an aircraft lost low near an airfield still counts as landed.
             events = flight_events.update(self.store.values(), self.airport_index, now)
             self.store.expire(now)
@@ -433,6 +454,7 @@ def aircraft_summary(f: LiveFacts, home: Place | None, filter_ids: list[int]) ->
         "squawk": t.squawk,
         "category": t.category,
         "pos_source": t.pos_source,
+        "sources": t.sources(f.ctx.now),
         "seen_s": round(f.ctx.now - t.last_seen, 1),
         "military": bool(cls and cls.military),
         "military_score": cls.military_score if cls else None,

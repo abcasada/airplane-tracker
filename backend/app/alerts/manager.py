@@ -44,7 +44,7 @@ DISPLAY_FACTS = [
     ("callsign", None), ("registration", None), ("type_code", None), ("type_description", None),
     ("operator", None), ("military", None), ("military_score", None), ("altitude_ft", None),
     ("ground_speed_kt", None), ("vertical_rate_fpm", None), ("squawk", None),
-    ("plane_alert_category", None),
+    ("plane_alert_category", None), ("sources", None), ("seen_by_my_receiver", None),
 ]  # fmt: skip
 
 

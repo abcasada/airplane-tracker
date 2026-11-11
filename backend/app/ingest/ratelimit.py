@@ -12,17 +12,17 @@ class TokenBucket:
             self.tokens = min(self.burst, self.tokens + (now - self.updated) * self.rate)
         self.updated = now
 
-    def wait_time(self, now: float) -> float:
-        """Seconds until a token is available (0 if one is available now)."""
+    def wait_time(self, now: float, cost: float = 1.0) -> float:
+        """Seconds until `cost` tokens are available (0 if they are available now)."""
         self._refill(now)
-        if self.tokens >= 1.0:
+        if self.tokens >= cost:
             return 0.0
-        return (1.0 - self.tokens) / self.rate
+        return (cost - self.tokens) / self.rate
 
-    def take(self, now: float) -> bool:
+    def take(self, now: float, cost: float = 1.0) -> bool:
         self._refill(now)
-        if self.tokens >= 1.0:
-            self.tokens -= 1.0
+        if self.tokens >= cost:
+            self.tokens -= cost
             return True
         return False
 
@@ -47,7 +47,11 @@ class CircuitBreaker:
         self.open_until = 0.0
         self.last_ok_at = now
 
-    def failure(self, now: float, error: str, client_error: bool) -> None:
+    def failure(
+        self, now: float, error: str, client_error: bool, retry_after_s: float | None = None
+    ) -> None:
+        """`retry_after_s`: the source's own wait (e.g. OpenSky until its credits refill), which
+        may be longer than our cap and is always honored."""
         self.failures += 1
         self.last_error = error
         if client_error:
@@ -57,4 +61,4 @@ class CircuitBreaker:
             delay = self.base_s * 2 ** (self.failures - self.threshold)
         else:
             return
-        self.open_until = now + min(self.max_s, delay)
+        self.open_until = now + max(min(self.max_s, delay), min(retry_after_s or 0.0, 86400.0))

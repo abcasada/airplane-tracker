@@ -4,7 +4,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Docker bridge networks; cloudflared reaches the app from one of these.
@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     ntfy_url: str | None = None
     ntfy_topic: str | None = None
     ntfy_token: str | None = None
+
+    # Optional live sources; each is enabled only when configured (see docs/SOURCES.md).
+    flyitaly_api_key: str | None = None
+    opensky_client_id: str | None = None
+    opensky_client_secret: str | None = None
+    opensky_daily_credits: int = 4000  # 8000 for an active feeder
+    # Your own receiver's aircraft.json over the LAN (readsb/ultrafeeder; dump978 for UAT).
+    receiver_url: str | None = None
+    receiver_uat_url: str | None = None
+    receiver_interval_s: float = Field(1.0, ge=0.5, le=60)
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod
