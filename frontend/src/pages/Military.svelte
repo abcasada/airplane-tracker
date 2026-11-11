@@ -28,10 +28,12 @@
     count: number
     evidence: string[]
     live_changes: number
+    dismissed_count: number | null
   }
   interface SuggestionList {
     marks: number
     min_evidence: number
+    resurface_on_double: boolean
     dismissed: number
     suggestions: Suggestion[]
   }
@@ -124,6 +126,19 @@
     await load()
   }
 
+  async function saveSuggestionSettings() {
+    if (!suggestions) return
+    try {
+      await put('/api/military/suggestions/settings', {
+        min_evidence: suggestions.min_evidence,
+        resurface_on_double: suggestions.resurface_on_double,
+      })
+    } catch (e) {
+      toast(errorMessage(e), 'error')
+    }
+    await load()
+  }
+
   async function removeOverride(key: string) {
     await del(`/api/military/overrides/${encodeURIComponent(key)}`)
     await load()
@@ -170,6 +185,11 @@
       {#each suggestions.suggestions as s (s.id)}
         <div class="sug stack">
           <strong>{s.title}</strong>
+          {#if s.dismissed_count}
+            <span class="small muted">
+              Back: you dismissed this at {s.dismissed_count} aircraft, and the evidence has since doubled.
+            </span>
+          {/if}
           <span class="small">{s.reason}</span>
           <span class="small muted">
             <span class="badge accent">{s.count} aircraft</span>
@@ -196,6 +216,21 @@
           Show {suggestions.dismissed} dismissed {suggestions.dismissed === 1 ? 'suggestion' : 'suggestions'} again
         </button>
       {/if}
+      <details class="small">
+        <summary>Suggestion settings</summary>
+        <div class="stack sug-settings">
+          <div class="row">
+            <label for="sug-min">Suggest when at least</label>
+            <input id="sug-min" type="number" class="num" min="2" max="20" bind:value={suggestions.min_evidence}
+              onchange={saveSuggestionSettings} />
+            <span>of your marks agree</span>
+          </div>
+          <label class="check">
+            <input type="checkbox" bind:checked={suggestions.resurface_on_double} onchange={saveSuggestionSettings} />
+            Bring back a dismissed suggestion once twice as many aircraft support it
+          </label>
+        </div>
+      </details>
     </div>
   {/if}
 
@@ -278,6 +313,13 @@
     gap: 4px;
     padding: 8px 0;
     border-bottom: 1px solid var(--border);
+  }
+  .sug-settings {
+    margin-top: 8px;
+    gap: 8px;
+  }
+  .sug-settings .num {
+    width: 5em;
   }
   .ovrow {
     padding: 6px 0;

@@ -25,9 +25,10 @@ from .military import (
     match_keyword,
 )
 
-# Three separate aircraft before suggesting anything: two marks can be one formation or one
+# Default for the "minimum agreeing marks" setting. Two marks can be one formation or one
 # operator's pair of airframes; three that agree look like a pattern rather than a coincidence.
 MIN_EVIDENCE = 3
+MIN_EVIDENCE_RANGE = (2, 20)
 # Same step and ceiling as the weight sliders on the review page.
 WEIGHT_STEP = 0.05
 MAX_WEIGHT = 0.95
@@ -83,6 +84,33 @@ class SuggestionPrefs(BaseModel):
     """Stored under the `military_suggestions` setting; included in backups."""
 
     dismissed: list[str] = Field(default_factory=list, max_length=MAX_DISMISSED)
+    # Evidence count when each suggestion was dismissed (absent for dismissals made before
+    # counts were kept; those never come back on their own).
+    dismissed_counts: dict[str, int] = Field(default_factory=dict)
+    min_evidence: int = Field(MIN_EVIDENCE, ge=MIN_EVIDENCE_RANGE[0], le=MIN_EVIDENCE_RANGE[1])
+    # Off by default: a dismissal is final unless you opt in.
+    resurface_on_double: bool = False
+
+    def dismiss(self, sug_id: str, count: int | None) -> None:
+        if sug_id in self.dismissed:
+            self.dismissed.remove(sug_id)
+        self.dismissed = [*self.dismissed[-(MAX_DISMISSED - 1) :], sug_id]
+        if count is None:
+            self.dismissed_counts.pop(sug_id, None)
+        else:
+            self.dismissed_counts[sug_id] = count
+        kept = set(self.dismissed)
+        self.dismissed_counts = {k: v for k, v in self.dismissed_counts.items() if k in kept}
+
+    def hides(self, sug: "Suggestion") -> bool:
+        if sug.id not in self.dismissed:
+            return False
+        was = self.dismissed_counts.get(sug.id)
+        return not (self.resurface_on_double and was is not None and sug.count >= 2 * was)
+
+    def clear_dismissed(self) -> None:
+        self.dismissed = []
+        self.dismissed_counts = {}
 
 
 # Type statistics come from the current dataset at analysis time, not from the snapshot.
@@ -126,6 +154,8 @@ class Suggestion(BaseModel):
     reason: str
     count: int
     evidence: list[str]
+    # Set when a dismissed suggestion is back because its evidence doubled: the count then.
+    dismissed_count: int | None = None
 
 
 def weight_of(s: ClassifierSettings, key: str) -> float:
@@ -160,20 +190,32 @@ def apply(s: ClassifierSettings, sug: Suggestion) -> ClassifierSettings:
 
 
 def suggest(
-    marks: Iterable[Mark], s: ClassifierSettings, dismissed: Iterable[str] = ()
+    marks: Iterable[Mark], s: ClassifierSettings, prefs: SuggestionPrefs | None = None
 ) -> list[Suggestion]:
+    """Every suggestion your marks support, dismissed ones included; see `visible`."""
+    n = (prefs or SuggestionPrefs()).min_evidence
     ms = [replace(m, inputs=replace(m.inputs, override=None)) for m in marks]
     base = {m.key: classify(m.inputs, s) for m in ms}
     out = [
-        *_prefix_additions(ms, s, base),
-        *_prefix_removals(ms, s),
-        *_owner_additions(ms, s, base),
-        *_owner_removals(ms, s),
-        *_weight_changes(ms, s, base),
+        *_prefix_additions(ms, s, base, n),
+        *_prefix_removals(ms, s, n),
+        *_owner_additions(ms, s, base, n),
+        *_owner_removals(ms, s, n),
+        *_weight_changes(ms, s, base, n),
     ]
-    skip = set(dismissed)
-    out = [x for x in out if x.id not in skip]
     out.sort(key=lambda x: (-x.count, x.id))
+    return out
+
+
+def visible(items: list[Suggestion], prefs: SuggestionPrefs) -> list[Suggestion]:
+    """Drops dismissed suggestions, except those back because their evidence doubled."""
+    out = []
+    for x in items:
+        if prefs.hides(x):
+            continue
+        if x.id in prefs.dismissed:
+            x = x.model_copy(update={"dismissed_count": prefs.dismissed_counts[x.id]})
+        out.append(x)
     return out
 
 
@@ -191,7 +233,7 @@ def _owner(m: Mark) -> str | None:
 
 
 def _prefix_additions(
-    ms: list[Mark], s: ClassifierSettings, base: dict[str, Classification]
+    ms: list[Mark], s: ClassifierSettings, base: dict[str, Classification], min_n: int
 ) -> list[Suggestion]:
     groups: dict[str, list[Mark]] = defaultdict(list)
     for m in ms:
@@ -200,7 +242,7 @@ def _prefix_additions(
             groups[hit.group(1)].append(m)
     out = []
     for prefix, group in groups.items():
-        if any(not m.is_military for m in group) or len(group) < MIN_EVIDENCE:
+        if any(not m.is_military for m in group) or len(group) < min_n:
             continue
         if match_callsign_prefix(f"{prefix}1", s.callsign_prefixes):
             continue  # already on the list
@@ -219,14 +261,14 @@ def _prefix_additions(
     return out
 
 
-def _prefix_removals(ms: list[Mark], s: ClassifierSettings) -> list[Suggestion]:
+def _prefix_removals(ms: list[Mark], s: ClassifierSettings, min_n: int) -> list[Suggestion]:
     groups: dict[str, list[Mark]] = defaultdict(list)
     for m in ms:
         if p := match_callsign_prefix(m.inputs.callsign, s.callsign_prefixes):
             groups[p].append(m)
     out = []
     for prefix, group in groups.items():
-        if any(m.is_military for m in group) or len(group) < MIN_EVIDENCE:
+        if any(m.is_military for m in group) or len(group) < min_n:
             continue
         out.append(
             Suggestion(
@@ -244,7 +286,7 @@ def _prefix_removals(ms: list[Mark], s: ClassifierSettings) -> list[Suggestion]:
 
 
 def _owner_additions(
-    ms: list[Mark], s: ClassifierSettings, base: dict[str, Classification]
+    ms: list[Mark], s: ClassifierSettings, base: dict[str, Classification], min_n: int
 ) -> list[Suggestion]:
     groups: dict[str, list[Mark]] = defaultdict(list)
     for m in ms:
@@ -255,7 +297,7 @@ def _owner_additions(
             groups[owner].append(m)
     out = []
     for owner, group in groups.items():
-        if len(group) < MIN_EVIDENCE:
+        if len(group) < min_n:
             continue
         if any(not m.is_military and match_keyword(_owner(m), [owner]) for m in ms):
             continue
@@ -274,14 +316,14 @@ def _owner_additions(
     return out
 
 
-def _owner_removals(ms: list[Mark], s: ClassifierSettings) -> list[Suggestion]:
+def _owner_removals(ms: list[Mark], s: ClassifierSettings, min_n: int) -> list[Suggestion]:
     out = []
     for raw in s.owner_keywords:
         kw = raw.strip().upper()
         if not kw:
             continue
         group = [m for m in ms if match_keyword(_owner(m), [kw])]
-        if any(m.is_military for m in group) or len(group) < MIN_EVIDENCE:
+        if any(m.is_military for m in group) or len(group) < min_n:
             continue
         out.append(
             Suggestion(
@@ -314,6 +356,7 @@ def _best_weight(
     key: str,
     base: dict[str, Classification],
     candidates: list[float],
+    min_n: int,
 ) -> tuple[float, list[Mark]] | None:
     """The smallest change that brings the most marks in line without breaking any other mark.
 
@@ -337,11 +380,11 @@ def _best_weight(
             break
         if len(fixed) > (len(best[1]) if best else 0):
             best = (v, fixed)
-    return best if best and len(best[1]) >= MIN_EVIDENCE else None
+    return best if best and len(best[1]) >= min_n else None
 
 
 def _weight_changes(
-    ms: list[Mark], s: ClassifierSettings, base: dict[str, Classification]
+    ms: list[Mark], s: ClassifierSettings, base: dict[str, Classification], min_n: int
 ) -> list[Suggestion]:
     out = []
     for key in WEIGHT_KEYS:
@@ -350,10 +393,10 @@ def _weight_changes(
         wrong_no = [m for m in fired if m.is_military and not base[m.key].military]
         cur = weight_of(s, key)
         lower = higher = None
-        if len(wrong_yes) >= MIN_EVIDENCE:
-            lower = _best_weight(fired, s, key, base, _grid(cur, down=True))
-        if len(wrong_no) >= MIN_EVIDENCE:
-            higher = _best_weight(fired, s, key, base, _grid(cur, down=False))
+        if len(wrong_yes) >= min_n:
+            lower = _best_weight(fired, s, key, base, _grid(cur, down=True), min_n)
+        if len(wrong_no) >= min_n:
+            higher = _best_weight(fired, s, key, base, _grid(cur, down=False), min_n)
         if lower and higher:
             continue  # your marks pull this clue both ways; nothing to suggest
         label = SIGNAL_LABELS.get(key, key)

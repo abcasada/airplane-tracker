@@ -8,10 +8,12 @@ from app.classify.suggest import (
     MIN_EVIDENCE,
     Mark,
     Suggestion,
+    SuggestionPrefs,
     apply,
     from_snapshot,
     suggest,
     to_snapshot,
+    visible,
 )
 from app.sources.base import Observation, SourceBatch
 from tests.conftest import Harness
@@ -126,9 +128,45 @@ def test_dual_use_weight_and_dismissed() -> None:
     marks = h60s(0.8)
     sug = _by_id(suggest(marks, s))["weight:dual_use_type:raise"]
     assert sug.value == 0.75 and apply(s, sug).dual_use_max_weight == 0.75
-    assert "weight:dual_use_type:raise" not in _by_id(
-        suggest(marks, s, dismissed=["weight:dual_use_type:raise"])
+    prefs = SuggestionPrefs()
+    prefs.dismiss("weight:dual_use_type:raise", sug.count)
+    assert "weight:dual_use_type:raise" not in _by_id(visible(suggest(marks, s, prefs), prefs))
+
+
+def test_min_evidence_setting() -> None:
+    s = ClassifierSettings()
+    two = [_mark(f"a{i}", True, callsign=f"BOLT{i}1") for i in range(2)]
+    assert "callsign_prefix:add:BOLT" not in _by_id(suggest(two, s))
+    assert "callsign_prefix:add:BOLT" in _by_id(suggest(two, s, SuggestionPrefs(min_evidence=2)))
+    four = [_mark(f"a{i}", True, callsign=f"BOLT{i}1") for i in range(4)]
+    assert "callsign_prefix:add:BOLT" not in _by_id(
+        suggest(four, s, SuggestionPrefs(min_evidence=5))
     )
+
+
+def test_dismissed_comes_back_when_evidence_doubles_only_if_enabled() -> None:
+    s = ClassifierSettings()
+    sid = "callsign_prefix:add:BOLT"
+
+    def marks(n: int) -> list[Mark]:
+        return [_mark(f"a{i}", True, callsign=f"BOLT{i}1") for i in range(n)]
+
+    prefs = SuggestionPrefs()
+    prefs.dismiss(sid, 3)
+    for n in (3, 5, 6, 9):  # off by default: never comes back
+        assert sid not in _by_id(visible(suggest(marks(n), s, prefs), prefs))
+    prefs.resurface_on_double = True
+    assert sid not in _by_id(visible(suggest(marks(5), s, prefs), prefs))
+    back = _by_id(visible(suggest(marks(6), s, prefs), prefs))[sid]
+    assert back.count == 6 and back.dismissed_count == 3
+    # Dismissing it again raises the bar to double the new count.
+    prefs.dismiss(sid, 6)
+    assert prefs.dismissed == [sid] and prefs.dismissed_counts == {sid: 6}
+    assert sid not in _by_id(visible(suggest(marks(11), s, prefs), prefs))
+    assert sid in _by_id(visible(suggest(marks(12), s, prefs), prefs))
+    # Dismissals saved before counts were kept never come back on their own.
+    old = SuggestionPrefs(dismissed=[sid], resurface_on_double=True)
+    assert sid not in _by_id(visible(suggest(marks(12), s, old), old))
 
 
 def test_overrides_inside_inputs_are_ignored() -> None:
@@ -212,11 +250,25 @@ async def test_suggestions_api_accept_dismiss_and_backup(authed: Harness) -> Non
     snaps = {o["key"]: o["snapshot"] for o in backup["military_overrides"]}
     assert snaps["hex:a00001"]["callsign"] == "BOLT11"
 
+    r = await c.put(
+        "/api/military/suggestions/settings", json={"min_evidence": 4, "resurface_on_double": True}
+    )
+    assert r.status_code == 200, r.text
+    data = (await c.get("/api/military/suggestions")).json()
+    assert data["min_evidence"] == 4 and data["resurface_on_double"]
+    assert data["suggestions"] == []  # only 3 PAT marks now
+    bad = {"min_evidence": 1, "resurface_on_double": False}
+    assert (await c.put("/api/military/suggestions/settings", json=bad)).status_code == 422
+    await c.put(
+        "/api/military/suggestions/settings", json={"min_evidence": 3, "resurface_on_double": True}
+    )
+
     await c.delete("/api/military/suggestions/dismissed")
     data = (await c.get("/api/military/suggestions")).json()
     assert data["dismissed"] == 0 and ids[0] in [s["id"] for s in data["suggestions"]]
+    assert data["resurface_on_double"]  # restoring dismissed keeps the settings
 
     r = await c.post("/api/backup/restore", json=backup)
     assert r.status_code == 200, r.text
     prefs = await authed.ctx.db.get_json("military_suggestions")
-    assert prefs == {"dismissed": [ids[0]]}
+    assert prefs["dismissed"] == [ids[0]] and prefs["dismissed_counts"] == {ids[0]: 3}

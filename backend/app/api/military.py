@@ -35,6 +35,11 @@ class SuggestionRef(BaseModel):
     id: str = Field(min_length=1, max_length=200)
 
 
+class SuggestionSettings(BaseModel):
+    min_evidence: int = Field(ge=sg.MIN_EVIDENCE_RANGE[0], le=sg.MIN_EVIDENCE_RANGE[1])
+    resurface_on_double: bool
+
+
 @router.get("/settings")
 async def get_settings(ctx: Ctx, _: CurrentUser) -> ClassifierSettings:
     return ctx.rt().classifier
@@ -186,10 +191,11 @@ async def _prefs(ctx: Ctx) -> sg.SuggestionPrefs:
 
 
 async def _current(ctx: Ctx) -> tuple[list[sg.Suggestion], sg.SuggestionPrefs, int]:
+    """All suggestions your marks support (dismissed included), your prefs, and the mark count."""
     rt = ctx.rt()
     prefs = await _prefs(ctx)
     marks = await _marks(rt)
-    return sg.suggest(marks, rt.classifier, prefs.dismissed), prefs, len(marks)
+    return sg.suggest(marks, rt.classifier, prefs), prefs, len(marks)
 
 
 def _live_changes(rt: Runtime, settings: ClassifierSettings) -> int:
@@ -209,21 +215,36 @@ async def suggestions(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
     items, prefs, marks = await _current(ctx)
     return {
         "marks": marks,
-        "min_evidence": sg.MIN_EVIDENCE,
+        "min_evidence": prefs.min_evidence,
+        "resurface_on_double": prefs.resurface_on_double,
         "dismissed": len(prefs.dismissed),
         "suggestions": [
             {**s.model_dump(), "live_changes": _live_changes(rt, sg.apply(rt.classifier, s))}
-            for s in items
+            for s in sg.visible(items, prefs)
         ],
     }
+
+
+@router.put("/suggestions/settings")
+async def put_suggestion_settings(
+    body: SuggestionSettings, ctx: Ctx, user: CurrentUser
+) -> SuggestionSettings:
+    prefs = await _prefs(ctx)
+    prefs.min_evidence = body.min_evidence
+    prefs.resurface_on_double = body.resurface_on_double
+    await ctx.db.set_json(PREFS_KEY, prefs.model_dump())
+    await ctx.db.audit(
+        ctx.clock.now(), user.username, "classifier.suggestion.settings", body.model_dump()
+    )
+    return body
 
 
 @router.post("/suggestions/accept")
 async def accept_suggestion(body: SuggestionRef, ctx: Ctx, user: CurrentUser) -> ClassifierSettings:
     # Recomputed here rather than trusting the client's copy, so a stale page can't apply a
     # change your current overrides no longer support.
-    items, _, _ = await _current(ctx)
-    sug = next((s for s in items if s.id == body.id), None)
+    items, prefs, _ = await _current(ctx)
+    sug = next((s for s in sg.visible(items, prefs) if s.id == body.id), None)
     if sug is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "This suggestion no longer applies")
     rt = ctx.rt()
@@ -237,18 +258,22 @@ async def accept_suggestion(body: SuggestionRef, ctx: Ctx, user: CurrentUser) ->
 
 @router.post("/suggestions/dismiss")
 async def dismiss_suggestion(body: SuggestionRef, ctx: Ctx, user: CurrentUser) -> dict[str, int]:
-    prefs = await _prefs(ctx)
-    if body.id not in prefs.dismissed:
-        prefs.dismissed = [*prefs.dismissed[-(sg.MAX_DISMISSED - 1) :], body.id]
-        await ctx.db.set_json(PREFS_KEY, prefs.model_dump())
-        await ctx.db.audit(
-            ctx.clock.now(), user.username, "classifier.suggestion.dismiss", {"id": body.id}
-        )
+    # The evidence count now is what "doubled" is measured against; recomputed, not trusted
+    # from the client. A suggestion that no longer applies is still dismissed, without a count.
+    items, prefs, _ = await _current(ctx)
+    sug = next((s for s in items if s.id == body.id), None)
+    prefs.dismiss(body.id, sug.count if sug else None)
+    await ctx.db.set_json(PREFS_KEY, prefs.model_dump())
+    await ctx.db.audit(
+        ctx.clock.now(), user.username, "classifier.suggestion.dismiss", {"id": body.id}
+    )
     return {"dismissed": len(prefs.dismissed)}
 
 
 @router.delete("/suggestions/dismissed")
 async def restore_dismissed(ctx: Ctx, user: CurrentUser) -> dict[str, int]:
-    await ctx.db.set_json(PREFS_KEY, sg.SuggestionPrefs().model_dump())
+    prefs = await _prefs(ctx)
+    prefs.clear_dismissed()  # keeps the min-evidence and resurface settings
+    await ctx.db.set_json(PREFS_KEY, prefs.model_dump())
     await ctx.db.audit(ctx.clock.now(), user.username, "classifier.suggestion.restore")
     return {"dismissed": 0}
