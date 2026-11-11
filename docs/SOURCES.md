@@ -105,7 +105,22 @@ worth keeping.
   Sources report.
 - **Your part:** request a free key at flyitalyadsb.com → `FLYITALY_API_KEY`.
 
-### 6. OpenSky Network
+### 6. OpenSky Network (built, opt-in)
+
+- **Built 2026-11-10:** `GET https://opensky-network.org/api/states/all?lamin=…&lomin=…&lamax=…&lomax=…&extended=1`
+  with a Bearer token from the client-credentials grant at
+  `auth.opensky-network.org/…/openid-connect/token` (tokens last 30 min; the app renews a minute
+  early, and once more on a 401). The query circle becomes its bounding box. State vectors are
+  converted from m, m/s to ft, kt, ft/min; `extended=1` adds the emitter category.
+- **Budget = credits:** 1 credit for a box ≤25 sq°, 2 ≤100, 3 ≤400, 4 above (a 250 nm circle at
+  39° N is ~89 sq° = 2 credits; the usual 35–85 nm circles cost 1). The app's bucket counts
+  credits and keeps to half the daily allowance (`OPENSKY_DAILY_CREDITS`, default 4,000 → 2,000 a
+  day, one 1-credit request every ~43 s). It polls only the outer circle when there are two. A 429
+  backs off for as long as `X-Rate-Limit-Retry-After-Seconds` says; the System page shows the
+  remaining credits from `X-Rate-Limit-Remaining`.
+- **Terms to check:** OpenSky licenses its data for non-profit research and education, government
+  and internal evaluation; personal hobby use isn't named explicitly. Credit: "The OpenSky
+  Network, https://opensky-network.org" (shown on the Live and System pages when enabled).
 
 - Free account. OAuth2 client credentials only (basic auth was retired). 4,000 credits/day
   (8,000 as an active feeder); a regional `/states/all` box costs 1–4 credits, so at 1 credit per

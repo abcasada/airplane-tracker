@@ -53,9 +53,12 @@ class SourceBatch:
 
 
 class SourceError(Exception):
-    def __init__(self, message: str, status: int | None = None) -> None:
+    def __init__(
+        self, message: str, status: int | None = None, retry_after_s: float | None = None
+    ) -> None:
         super().__init__(message)
         self.status = status
+        self.retry_after_s = retry_after_s  # when the source says how long to wait
 
     @property
     def is_client_error(self) -> bool:

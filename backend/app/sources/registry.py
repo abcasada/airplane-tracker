@@ -7,6 +7,7 @@ from app.config import Settings
 
 from . import readsb
 from .base import AreaSource, FeedSource
+from .opensky import OpenSkySource
 
 
 def build_sources(
@@ -19,4 +20,11 @@ def build_sources(
     ]
     if settings.flyitaly_api_key:
         sources.append(readsb.flyitaly(http, clock, settings.flyitaly_api_key))
+    if settings.opensky_client_id and settings.opensky_client_secret:
+        sources.append(
+            OpenSkySource(
+                http, clock, settings.opensky_client_id, settings.opensky_client_secret,
+                settings.opensky_daily_credits,
+            )
+        )  # fmt: skip
     return sources

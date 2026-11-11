@@ -47,7 +47,11 @@ class CircuitBreaker:
         self.open_until = 0.0
         self.last_ok_at = now
 
-    def failure(self, now: float, error: str, client_error: bool) -> None:
+    def failure(
+        self, now: float, error: str, client_error: bool, retry_after_s: float | None = None
+    ) -> None:
+        """`retry_after_s`: the source's own wait (e.g. OpenSky until its credits refill), which
+        may be longer than our cap and is always honored."""
         self.failures += 1
         self.last_error = error
         if client_error:
@@ -57,4 +61,4 @@ class CircuitBreaker:
             delay = self.base_s * 2 ** (self.failures - self.threshold)
         else:
             return
-        self.open_until = now + min(self.max_s, delay)
+        self.open_until = now + max(min(self.max_s, delay), min(retry_after_s or 0.0, 86400.0))

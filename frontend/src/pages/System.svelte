@@ -3,6 +3,7 @@
   const CREDITS = [
     { name: 'adsb.fi', url: 'https://adsb.fi', note: 'live positions (open data API, personal non-commercial use)' },
     { name: 'adsb.lol', url: 'https://adsb.lol', note: 'live positions (ODbL 1.0)' },
+    { name: 'The OpenSky Network', url: 'https://opensky-network.org', note: 'live positions when OPENSKY_CLIENT_ID is set (non-commercial; see their terms of use)' },
     { name: 'FlyItalyADSB', url: 'https://flyitalyadsb.com', note: 'live positions when FLYITALY_API_KEY is set (CC BY-SA 4.0)' },
     { name: 'tar1090-db', url: 'https://github.com/wiedehopf/tar1090-db', note: 'aircraft database and military address ranges (wiedehopf, from Mictronics)' },
     { name: 'plane-alert-db', url: 'https://github.com/sdr-enthusiasts/plane-alert-db', note: 'notable aircraft and photo links (ODbL 1.0, contents DbCL 1.0)' },

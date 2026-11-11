@@ -8,6 +8,8 @@ included in this repository.
 - adsb.lol API (https://adsb.lol). Data licensed under the Open Database License (ODbL) 1.0.
 - FlyItalyADSB API (https://flyitalyadsb.com), only when the user sets an API key. Data licensed
   under CC BY-SA 4.0.
+- The OpenSky Network (https://opensky-network.org), only when the user sets API client
+  credentials. Used under OpenSky's terms of use (non-commercial).
 - tar1090-db by wiedehopf (https://github.com/wiedehopf/tar1090-db), derived from the
   Mictronics readsb database. Used for aircraft type/registration and military address ranges.
 - plane-alert-db by SDR-Enthusiasts, Ramon F. Kolb (kx1t) and contributors

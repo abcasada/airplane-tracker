@@ -119,7 +119,7 @@ services:
 | **adsb.lol** — `api.adsb.lol/v2/point/{lat}/{lon}/{nm}` (≤250 nm) | No key today (a key "obtained by feeding" is planned) | Unpublished, "dynamic" | **ODbL**; contact them for production use | 200 OK, same JSON shape | **Merged** (was failover) |
 | airplanes.live | — | — | — | **403** "Please contact us…" | Excluded |
 | **FlyItalyADSB** — `api.flyitalyadsb.com/v2/lat/{lat}/lon/{lon}/dist/{km}` (≤500 km free) | Free key (`X-Api-Key`) | 30 req/min, 300,000/month per key | CC BY-SA 4.0, one-line credit | not polled (mock-tested only) | **Merged, opt-in** (`FLYITALY_API_KEY`) |
-| OpenSky Network | OAuth2 | 4,000 credits/day registered | Non-commercial | not polled | Possible later fallback. No type or registration. |
+| **OpenSky Network** — `opensky-network.org/api/states/all` (bounding box) | OAuth2 client credentials | 4,000 credits/day (8,000 as a feeder); 1–4 credits per box by area | Non-commercial (research/education); cite OpenSky | not polled (mock-tested only) | **Merged, opt-in** (`OPENSKY_CLIENT_ID`/`_SECRET`), credit-metered. No type or registration. |
 
 **Coverage around Salina** (live check, 80 nm around KSLN on 2026-10-15):
 
@@ -137,7 +137,7 @@ services:
   - Overlapping circles merge. Places within ~15 nm of each other (home, KSLN, the range) collapse into one inner and one outer query.
 - **Every enabled source is polled for every circle, each on its own schedule** (one asyncio loop per source, so a slow source never delays the others). Each has its own token bucket at ≤50% of its published sustained limit, and its own circuit breaker with exponential backoff on any 4xx/429 (30 s doubling to 5 min). The Salina setup uses ~0.13 req/s per source.
 - A source whose budget can't poll every circle at its interval (credit- or month-limited ones) skips circles that lie inside another circle, so it still covers the whole area, just less often.
-- Credit-metered sources (OpenSky) declare a cost per request; the bucket counts credits, not requests.
+- Credit-metered sources (OpenSky) declare a cost per request; the bucket counts credits, not requests. A source that says how long to wait (OpenSky's `X-Rate-Limit-Retry-After-Seconds`) is left alone that long, even past the 5-minute cap.
 - Lookups of followed aircraft (`watch.py`) are not merged: the first healthy lookup source answers, spending its own budget.
 - Bandwidth: a few KB per poll around Salina (tens of MB/day). Even very busy JFK was 32–38 KB per 80 nm poll.
 
@@ -647,7 +647,7 @@ Each phase ends usable, with tests passing and the container working. **The filt
 
 ### Phase 5 — Sources, ntfy, extras (re-planned v4, see SOURCES.md)
 - ntfy notifier (§9.1) and the military review page's list suggestions from your overrides.
-- Multi-source merge + Sources report (*done*); FlyItalyADSB (*done*) and OpenSky; local receiver; FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
+- Multi-source merge + Sources report (*done*); FlyItalyADSB and OpenSky (*done*); local receiver; FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
 - Dropped: Web Push backup channel (ntfy instead) and GHCR image releases (your decision).
 - Backup/restore of places and filters. *Backup/restore done:* Settings → Backup downloads one JSON file (places, filters, mutes, settings, military overrides; never credentials). Restore merges, remaps place ids inside filters and mutes, skips places and filters that already exist, and keeps this install's home.
 

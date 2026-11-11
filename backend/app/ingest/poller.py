@@ -156,7 +156,7 @@ class Poller:
             batch = await call()
         except SourceError as e:
             slot.errors += 1
-            slot.breaker.failure(self.clock.now(), str(e), e.is_client_error)
+            slot.breaker.failure(self.clock.now(), str(e), e.is_client_error, e.retry_after_s)
             log.warning("%s failed: %s", slot.name, e)
             return None
         slot.last_latency_ms = (time.perf_counter() - started) * 1000

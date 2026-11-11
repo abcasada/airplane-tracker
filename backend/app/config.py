@@ -41,6 +41,9 @@ class Settings(BaseSettings):
 
     # Optional live sources; each is enabled only when configured (see docs/SOURCES.md).
     flyitaly_api_key: str | None = None
+    opensky_client_id: str | None = None
+    opensky_client_secret: str | None = None
+    opensky_daily_credits: int = 4000  # 8000 for an active feeder
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod

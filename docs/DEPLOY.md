@@ -68,6 +68,7 @@ adsb.fi and adsb.lol work without setup. Each source below turns on when its set
 | Source | `.env` | Budget the app keeps to |
 |---|---|---|
 | FlyItalyADSB | `FLYITALY_API_KEY=…` (free key by email at flyitalyadsb.com) | ≤50% of the free tier's 300,000 requests/month (~1 request every 18 s) |
+| OpenSky Network | `OPENSKY_CLIENT_ID=…`, `OPENSKY_CLIENT_SECRET=…` (API client from your account page); `OPENSKY_DAILY_CREDITS=8000` if you're an active feeder | ≤50% of the daily credits (default 2,000 of 4,000: one small-area request every ~43 s) |
 
 ## 5. Install on your phone
 
