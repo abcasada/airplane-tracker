@@ -17,7 +17,7 @@ from app.classify.military import ClassifierSettings, Inputs, classify
 from app.context import AppContext
 from app.enrich.datasets import DatasetManager
 from app.enrich.enricher import Enricher
-from app.enrich.routes import RouteService
+from app.enrich.routes import Route, RouteService
 from app.filters.engine import CompiledFilter
 from app.filters.exclusions import Exclusion, ExclusionIn, ExclusionRepo, is_excluded
 from app.filters.facts import EvalContext, LiveFacts
@@ -35,6 +35,8 @@ from app.ingest.planner import PlannerConfig, QueryCircle, plan
 from app.ingest.poller import Poller, SourcePrefs
 from app.ingest.recorder import Recorder
 from app.ingest.sourcestats import SourceStats
+from app.ingest.swim import SwimFeed, swim_config
+from app.ingest.swimstore import FiledFlight, SwimFlights
 from app.live.broker import Broker
 from app.notify.actions import MUTE_SECONDS
 from app.notify.base import Notifier
@@ -47,6 +49,8 @@ from app.predict.engine import MIN_CYCLE_S, PredictionSettings, PredictionState,
 from app.replay.backtest import Backtester
 from app.sources.base import SourceBatch
 from app.sources.registry import build_sources
+from app.sources.swim import NAME as SWIM_NAME
+from app.sources.swim import normalize_acid
 from app.tracks import events as flight_events
 from app.tracks.store import Track, TrackStore
 from app.watch import Watchlist
@@ -60,6 +64,8 @@ LIVE_PUBLISH_MIN_INTERVAL_S = 2.0
 # Receivers are read every second; recording every 5th second is plenty for replay.
 RECEIVER_RECORD_EVERY_S = 5.0
 FEED_EVAL_EVERY_S = 0.9
+SWIM_FLUSH_INTERVAL_S = 30.0
+SWIM_PRUNE_INTERVAL_S = 3600.0
 
 
 class Runtime:
@@ -100,6 +106,13 @@ class Runtime:
             self.on_batch,
             watch=self.watch,
         )
+        self.swim_flights = SwimFlights(ctx.db)
+        swim_cfg = swim_config(ctx.settings)
+        self.swim = (
+            SwimFeed(swim_cfg, ctx.clock, self.swim_flights, self.on_swim_flights)
+            if swim_cfg is not None
+            else None
+        )
         self.matches: dict[str, list[int]] = {}  # hex → matching filter ids (last cycle)
         self.last_eval_ms = 0.0
         self.last_eval_at: float | None = None
@@ -122,8 +135,14 @@ class Runtime:
         await self.alerts.load()
         self.source_stats.load(await self.ctx.db.get_json("source_stats", {}))
         await self.reload_sources()
+        if self.swim is not None:
+            await self.swim_flights.load(self.ctx.clock.now())
+            self.update_swim_interest()
         if self.ctx.settings.run_background:
             self._spawn(self.poller.run(), "poller")
+            if self.swim is not None:
+                self._spawn(self.swim.run(), "swim")
+                self._spawn(self._swim_maintenance(), "swim-store")
             self._spawn(self._route_loop(), "routes")
             self._spawn(self._maintenance(), "maintenance")
 
@@ -153,8 +172,9 @@ class Runtime:
         await self.backtester.cancel_all()
         try:
             await self.sightings.flush(self.ctx.clock.now())
+            await self.swim_flights.flush()
         except Exception:
-            log.exception("could not save sightings")
+            log.exception("could not save sightings or SWIM flights")
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -165,7 +185,7 @@ class Runtime:
             try:
                 if await self.routes.flush():
                     for t in self.store.values():
-                        t.route = self.routes.get(t.callsign)
+                        t.route = self.route_for(t)
             except Exception:
                 log.exception("route lookup failed")
             await asyncio.sleep(5)
@@ -185,6 +205,19 @@ class Runtime:
                 log.exception("maintenance failed")
             await asyncio.sleep(DATASET_CHECK_INTERVAL_S)
 
+    async def _swim_maintenance(self) -> None:
+        last_prune = 0.0
+        while True:
+            await asyncio.sleep(SWIM_FLUSH_INTERVAL_S)
+            try:
+                await self.swim_flights.flush()
+                now = self.ctx.clock.now()
+                if now - last_prune >= SWIM_PRUNE_INTERVAL_S:
+                    last_prune = now
+                    await self.swim_flights.prune(now)
+            except Exception:
+                log.exception("SWIM store maintenance failed")
+
     # ---- configuration reloads ---------------------------------------------------------------
 
     async def reload_places(self) -> None:
@@ -192,6 +225,7 @@ class Runtime:
         self.coverage.load(await self.ctx.db.get_json("coverage", {}))
         await self.load_runways()
         self._compile()
+        self.update_swim_interest()
 
     async def load_runways(self) -> None:
         out: dict[int, list[Runway]] = {}
@@ -211,6 +245,7 @@ class Runtime:
         self.exclusions = await ExclusionRepo(self.ctx.db, self.ctx.clock).all()
         self._compile()
         await self.watch.refresh(self.filters)
+        self.update_swim_interest()
 
     async def reload_prediction(self) -> None:
         s = PredictionSettings.model_validate(await self.ctx.db.get_json("prediction", {}))
@@ -226,6 +261,44 @@ class Runtime:
     async def reload_sources(self) -> None:
         prefs = SourcePrefs.model_validate(await self.ctx.db.get_json("sources", {}))
         self.poller.set_disabled(prefs.disabled)
+        if self.swim is not None:
+            self.swim.set_enabled(SWIM_NAME not in prefs.disabled)
+
+    def source_status(self) -> list[dict[str, Any]]:
+        return self.poller.status() + ([self.swim.status()] if self.swim is not None else [])
+
+    def source_names(self) -> set[str]:
+        return {s.name for s in self.poller.slots} | ({self.swim.name} if self.swim else set())
+
+    def update_swim_interest(self) -> None:
+        """SWIM keeps flights from/to your airport places and those of followed aircraft."""
+        if self.swim is None:
+            return
+        airports = {p.airport_icao for p in self.places if p.role == "airport" and p.airport_icao}
+        acids = {
+            a for e in self.watch.entries.values()
+            if e.kind == "reg" and (a := normalize_acid(e.value))
+        }  # fmt: skip
+        self.swim.set_interest(airports, acids)
+
+    async def on_swim_flights(self, flights: list[FiledFlight]) -> None:
+        """New or changed flight plans: refresh the route of aircraft flying them."""
+        acids = {f.acid for f in flights}
+        for t in self.store.values():
+            if normalize_acid(t.callsign) in acids or normalize_acid(t.registration) in acids:
+                t.route = self.route_for(t)
+
+    def swim_extra(self) -> SwimFlights | None:
+        """Filed flights for the `filed_*` filter fields; None when SWIM isn't configured."""
+        return self.swim_flights if self.swim is not None else None
+
+    def route_for(self, t: Track) -> Route | None:
+        """A filed FAA flight plan first, then the callsign route databases."""
+        if self.swim is not None:
+            f = self.swim_flights.best_for(t.callsign, t.registration, t.last_seen)
+            if f is not None and (route := self.swim_flights.route_for(f)) is not None:
+                return route
+        return self.routes.get(t.callsign)
 
     async def reload_classifier(self) -> None:
         self.classifier = ClassifierSettings.model_validate(
@@ -340,7 +413,8 @@ class Runtime:
                     self.source_stats.add(obs.source, obs.hex, now)
             track, is_new = self.store.update(obs)
             await self.enrich_track(track, is_new)
-            self.routes.want(track.callsign, track.lat, track.lon)
+            if track.route is None or track.route.source != "faa-swim":
+                self.routes.want(track.callsign, track.lat, track.lon)
             home = self.home()
             if home is not None and track.has_position:
                 assert track.lat is not None and track.lon is not None
@@ -362,7 +436,7 @@ class Runtime:
             track.airline_callsign = track.callsign
         if is_new or callsign_changed or track.classification is None:
             self.classify_track(track)
-        track.route = self.routes.get(track.callsign)
+        track.route = self.route_for(track)
 
     async def on_batch(self, batch: SourceBatch, circle: QueryCircle) -> None:
         async with self._lock:
@@ -388,6 +462,7 @@ class Runtime:
         tz: ZoneInfo = self.alerts.tz
         extras = {
             "runways": self.runways, "sightings": self.sightings, "airports": self.airport_index,
+            "swim": self.swim_extra(),
         }  # fmt: skip
         return EvalContext(now or self.ctx.clock.now(), self.places_by_id(), tz, extras)
 

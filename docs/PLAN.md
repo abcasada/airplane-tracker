@@ -186,6 +186,17 @@ Not built until you ask. Any paid source must go through an app-enforced monthly
 
 **Recommendation:** Phase 5, only if you want "scheduled visitor" alerts. ADS-B stays the core because it sees military, unfiled and VFR traffic.
 
+### 3.6 FAA SWIM schedule source (built 2026-11-17, mock-tested; waiting on SCDS registration)
+
+- **Feed:** SCDS subscription to **TFMS Flight Data** (`tfmDataService`, the ASDI successor). It's one national stream of `fltdMessage`s (flight plan, modify, times, track, departure, arrival, cancellation) with the flight's identity as attributes (`acid`, `depArpt`, `arrArpt`, `flightRef`, `sourceTimeStamp`). We use plans, times, aircraft type, status and departure/arrival reports, not TFMS positions (ADS-B has better ones). Airports come as ICAO (KDEN) or FAA (DEN) codes; they're resolved through OurAirports.
+- **Opt-in:** on only when `SWIM_HOST`, `SWIM_VPN`, `SWIM_USERNAME`, `SWIM_PASSWORD` and `SWIM_QUEUE` are set. The Solace client (`solace-pubsubplus`, Apache-2.0, ~5 MB wheel, ~14 MB installed, ~14 MB RSS once imported) is an optional `swim` extra that the Dockerfile installs; it is imported lazily, so the app runs without it and tests never load it.
+- **Threads → asyncio:** `sources/swim.py` connects (TLS with the system CA store, compressed transport, durable non-exclusive queue, auto-ack) and parses. Solace calls `ingest/swim.py` on its own thread for each message: inflate (bounded to 2 MB), then a byte regex on the message headers keeps only documents that mention one of your **airport places** or the **registrations of followed aircraft** (GA plans file under the N-number). Kept documents go into a bounded queue (500 documents / 8 MB, oldest dropped); an asyncio task drains it, parses in a worker thread and merges into the store. Reconnects back off exponentially from 10 s to 10 min; the System → Sources report shows state, messages/min, kept/irrelevant/dropped counts and the last error, and the per-source switch turns it off (disconnects).
+- **Store** (`ingest/swimstore.py`): one record per TFMS flight reference, merged field by field (late messages only fill gaps). At most 20,000 flights in memory, 3 days in SQLite (`swim_flights`, migration 0009), never exported.
+- **Matching:** a live aircraft matches a plan by callsign, or by registration for GA, within the plan's window (2 h before departure until 30 min after arrival); a plan in progress wins over the next leg. TFMS carries no ICAO hex.
+- **Routes:** a matched plan becomes the aircraft's route (source `faa-swim`) before adsb.im, so `route_origin`, `route_destination`, `destined_for` and `departed_from` use it, with the usual plausibility check; adsb.im isn't asked for those callsigns.
+- **Filter fields** (group "Filed plan"): `has_filed_plan`, `filed_origin`, `filed_destination`, `filed_aircraft_type`, `filed_status`, `filed_departure_in_s`, `filed_arrival_in_s`, and per airport place `filed_to_place`, `filed_from_place`, `filed_eta_s`. Unknown (not false) when SWIM isn't configured. The backtest uses the stored plans, so it only knows the last 3 days.
+- **Not yet:** alerts for filed flights that aren't in ADS-B range yet ("a C-17 filed into your airport for 14:20"). Filters evaluate tracked aircraft; the System page lists upcoming filed flights for your airports meanwhile. Areas aren't used for filtering: TFMS routes are fix names, not cheaply placed on a map.
+
 ---
 
 ## 4. Places

@@ -1,10 +1,26 @@
 """FAA SWIM (SCDS TFMS) schedule source: parsing, filtering, storage, fields and the bridge."""
 
+import asyncio
+import contextlib
 import gzip
+import threading
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
+from app.clock import FakeClock
+from app.db import Database
+from app.ingest import swim as swim_ingest
+from app.ingest import swimstore
+from app.ingest.swim import SwimFeed, swim_config
+from app.ingest.swimstore import FiledFlight, SwimFlights
+from app.sources.base import SourceError
 from app.sources.swim import (
+    FlightUpdate,
+    SolaceConnector,
+    SwimConfig,
     airport_aliases,
     decode_payload,
     interest_pattern,
@@ -12,6 +28,7 @@ from app.sources.swim import (
     parse_payload,
     parse_time,
 )
+from tests.conftest import make_settings
 
 FIXTURES = Path(__file__).parent / "fixtures" / "swim"
 
@@ -112,3 +129,299 @@ def test_small_helpers() -> None:
     assert parse_time("2027-01-15T14:00:00Z") == ts("2027-01-15T14:00:00")
     assert parse_time("2027-01-15T14:00:00") is None  # no zone: refuse rather than guess
     assert parse_time("soon") is None
+
+
+# ---- store: merge, matching, retention, persistence ----------------------------------------
+
+T0 = ts("2027-01-15T12:00:00")
+
+
+AIRPORT_ROWS = [
+    ("KDEN", "KDEN", "Test Denver", "large_airport", 39.86, -104.67),
+    ("KICT", "KICT", "Test Wichita", "large_airport", 37.65, -97.43),
+    ("KAAO", "KAAO", "Test Jabara", "small_airport", 37.75, -97.22),
+]
+
+
+async def add_airports(db: Database) -> None:
+    await db.executemany(
+        "INSERT OR REPLACE INTO airports(ident, icao, name, type, lat, lon) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        AIRPORT_ROWS,
+    )
+
+
+@pytest.fixture
+async def db(tmp_path: Path) -> AsyncIterator[Database]:
+    database = Database(tmp_path / "db.sqlite3")
+    await database.connect()
+    await add_airports(database)
+    yield database
+    await database.close()
+
+
+async def make_store(db: Database) -> SwimFlights:
+    return SwimFlights(db)
+
+
+def update(**kw: object) -> FlightUpdate:
+    base: dict[str, object] = {"key": "ref:1", "acid": "TST101", "msg_type": "x", "sent_at": T0}
+    return FlightUpdate(**{**base, **kw})  # type: ignore[arg-type]
+
+
+def key_of(f: FiledFlight | None) -> str | None:
+    return f.key if f else None
+
+
+async def test_store_merges_messages_and_resolves_faa_codes(db: Database) -> None:
+    store = await make_store(db)
+    for name in ("flight_plan.xml", "modify_default_ns.xml", "departure_arrival.xml"):
+        await store.apply(parse_payload(fixture(name)).updates)
+    f = store.flights["ref:100001"]
+    assert (f.origin, f.destination) == ("KDEN", "KICT")  # "DEN"/"ICT" resolved
+    assert f.aircraft_type == "B763" and f.status == "SCHEDULED"
+    assert f.departed_at == ts("2027-01-15T14:21:00")
+    assert f.arrived_at == ts("2027-01-15T15:32:00")
+    assert f.departure_time == f.departed_at and f.arrival_time == f.arrived_at
+    assert store.flights["ref:100003"].cancelled
+    assert store.airports["DEN"] == store.airports["KDEN"]
+
+
+async def test_late_messages_only_fill_gaps(db: Database) -> None:
+    store = await make_store(db)
+    await store.apply([update(eta=T0 + 7200, sent_at=T0 + 60)])
+    changed = await store.apply([update(eta=T0 + 3600, aircraft_type="B738", sent_at=T0)])
+    f = store.flights["ref:1"]
+    assert f.eta == T0 + 7200  # the older message doesn't overwrite
+    assert f.aircraft_type == "B738"  # but fills what was missing
+    assert changed == [f]
+    assert await store.apply([update(eta=T0 + 7200, sent_at=T0 + 120)]) == []
+
+
+async def test_best_for_picks_the_flight_in_progress(db: Database) -> None:
+    store = await make_store(db)
+    await store.apply([
+        update(key="ref:1", etd=T0, eta=T0 + 3600, arrived_at=T0 + 3500, sent_at=T0 + 3500),
+        update(key="ref:2", etd=T0 + 5400, eta=T0 + 9000),
+        update(key="ref:3", etd=T0 + 7200, eta=T0 + 9000, cancelled=True),
+        update(key="ref:4", acid="N123TS", etd=T0, eta=T0 + 1800),
+    ])  # fmt: skip
+    assert key_of(store.best_for("TST101", None, T0 + 600)) == "ref:1"
+    assert key_of(store.best_for("TST101", None, T0 + 3700)) == "ref:1"
+    # After the first leg's arrival + 30 min only the next leg fits.
+    assert key_of(store.best_for("TST101", None, T0 + 5500)) == "ref:2"
+    assert store.best_for("TST101", None, T0 - 3 * 3600) is None
+    # General aviation: the plan is filed under the registration.
+    assert key_of(store.best_for("N123TS", None, T0)) == "ref:4"
+    assert key_of(store.best_for(None, "N-123TS", T0)) == "ref:4"
+    assert store.best_for(None, None, T0) is None
+
+
+async def test_route_from_a_filed_plan(db: Database) -> None:
+    store = await make_store(db)
+    await store.apply([update(origin="DEN", destination="KICT", etd=T0, eta=T0 + 4000)])
+    route = store.route_for(store.flights["ref:1"])
+    assert route is not None and route.known and route.source == "faa-swim"
+    assert [leg.icao for leg in route.legs] == ["KDEN", "KICT"]
+    await store.apply([update(key="ref:9", origin="ZZZZ", destination="KICT", etd=T0)])
+    assert store.route_for(store.flights["ref:9"]) is None  # unknown airport: no legs
+
+
+async def test_store_persists_prunes_and_stays_bounded(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = await make_store(db)
+    await store.apply([update(key="ref:1", etd=T0, eta=T0 + 3600, origin="KDEN")])
+    await store.apply([update(key="ref:2", etd=T0 - 5 * 86400, sent_at=T0 - 5 * 86400)])
+    assert await store.flush() == 2
+    again = SwimFlights(store.db)
+    await again.load(T0)
+    assert set(again.flights) == {"ref:1"}  # older than the retention isn't loaded
+    assert "KDEN" in again.airports
+    assert await store.prune(T0) == 1
+    assert set(store.flights) == {"ref:1"}
+    rows = await store.db.fetchall("SELECT key FROM swim_flights")
+    assert [r["key"] for r in rows] == ["ref:1"]
+    monkeypatch.setattr(swimstore, "MAX_FLIGHTS", 10)
+    await store.apply([update(key=f"ref:x{i}", etd=T0 + i, sent_at=T0 + i) for i in range(20)])
+    assert len(store.flights) <= 10 and store.evicted > 0
+    assert "ref:x19" in store.flights
+    assert sum(len(v) for v in store.by_acid.values()) == len(store.flights)
+
+
+async def test_upcoming_lists_flights_for_your_airports(db: Database) -> None:
+    store = await make_store(db)
+    await store.apply([
+        update(key="ref:1", origin="KDEN", destination="KICT", etd=T0 + 600, eta=T0 + 4000),
+        update(key="ref:2", origin="KAAO", destination="ICT", etd=T0 + 60, eta=T0 + 900),
+        update(key="ref:3", origin="KDEN", destination="KAAO", etd=T0, eta=T0 + 3600),
+    ])  # fmt: skip
+    assert [f.key for f in store.upcoming({"KICT"}, T0)] == ["ref:2", "ref:1"]
+
+
+# ---- bridge: Solace thread → bounded queue → asyncio ---------------------------------------
+
+
+class FakeConnector:
+    def __init__(self, cfg: SwimConfig, on_payload: Callable[[bytes], None]) -> None:
+        self.on_payload = on_payload
+        self.connected = False
+        self.fail = 0  # connect attempts that raise
+        self.attempts = 0
+        self.closed = 0
+
+    def connect(self) -> None:
+        self.attempts += 1
+        if self.fail:
+            self.fail -= 1
+            raise RuntimeError("broker unreachable")
+        self.connected = True
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    def close(self) -> None:
+        self.connected = False
+        self.closed += 1
+
+
+CFG = SwimConfig("tcps://scds.example.invalid:55443", "TFMS", "user", "secret", "queue")
+
+
+async def make_feed(db: Database) -> tuple[SwimFeed, list[list[FiledFlight]], FakeClock]:
+    store = await make_store(db)
+    got: list[list[FiledFlight]] = []
+
+    async def on_flights(flights: list[FiledFlight]) -> None:
+        got.append(flights)
+
+    clock = FakeClock(T0)
+    return SwimFeed(CFG, clock, store, on_flights, FakeConnector), got, clock
+
+
+async def test_offer_keeps_only_your_airports_and_aircraft(db: Database) -> None:
+    feed, got, _ = await make_feed(db)
+    feed.offer(fixture("flight_plan.xml"))
+    assert feed.irrelevant == 1  # no interest set yet
+    feed.set_interest({"KICT"}, set())
+    feed.offer(fixture("flight_plan.xml"))
+    feed.offer(fixture("flow_info.xml"))
+    feed.offer(gzip.compress(fixture("modify_default_ns.xml")))
+    feed.offer(b"\x1f\x8bnot gzip")
+    assert (feed.received, feed.kept, feed.irrelevant, feed.dropped) == (5, 2, 2, 1)
+    assert await feed.drain() == 1
+    assert list(feed.store.flights) == ["ref:100001"]  # OTH200 (KBOS→KJFK) skipped
+    assert [f.acid for f in got[0]] == ["TST101"]
+    st = feed.status()
+    assert st["kind"] == "schedule" and st["swim"]["kept"] == 2
+    assert st["swim"]["flights"] == 1 and st["swim"]["queued"] == 0
+    assert st["swim"]["messages_per_min"] == 0  # the current minute isn't complete yet
+
+
+async def test_queue_is_bounded_and_drops_the_oldest(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    feed, _, _ = await make_feed(db)
+    monkeypatch.setattr(swim_ingest, "QUEUE_MAX", 3)
+    feed.set_interest({"KICT"}, set())
+    plan = fixture("flight_plan.xml")
+    for i in range(5):
+        feed.offer(plan.replace(b"100001", str(200000 + i).encode()))
+    assert feed.dropped == 2 and len(feed._queue) == 3
+    await feed.drain()
+    assert "ref:200000" not in feed.store.flights and "ref:200004" in feed.store.flights
+
+
+async def test_offer_from_another_thread_wakes_the_consumer(db: Database) -> None:
+    feed, got, _ = await make_feed(db)
+    feed.set_interest(set(), {"N123TS"})
+    task = asyncio.create_task(feed.run())
+    try:
+        for _ in range(200):
+            if feed.state == "connected":
+                break
+            await asyncio.sleep(0.01)
+        thread = threading.Thread(target=feed.offer, args=(fixture("departure_arrival.xml"),))
+        thread.start()
+        thread.join()
+        for _ in range(200):
+            if got:
+                break
+            await asyncio.sleep(0.01)
+        assert [f.acid for f in got[0]] == ["N123TS"]
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    assert isinstance(feed.connector, FakeConnector) and feed.connector.closed >= 1
+
+
+async def test_reconnects_with_exponential_backoff(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    feed, _, clock = await make_feed(db)
+    monkeypatch.setattr(swim_ingest, "BACKOFF_MIN_S", 0.01)
+    monkeypatch.setattr(swim_ingest, "CHECK_INTERVAL_S", 0.01)
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def sleep(s: float) -> None:
+        sleeps.append(s)
+        await real_sleep(0)
+
+    monkeypatch.setattr("app.ingest.swim.asyncio.sleep", sleep)
+    conn = feed.connector
+    assert isinstance(conn, FakeConnector)
+    conn.fail = 3
+
+    async def until(cond: Callable[[], bool]) -> None:
+        for _ in range(2000):
+            if cond():
+                return
+            await real_sleep(0)
+        raise AssertionError("timed out")
+
+    task = asyncio.create_task(feed._connection_loop())
+    try:
+        await until(lambda: feed.state == "connected")
+        assert conn.attempts == 4
+        assert sleeps[:3] == [0.01, 0.02, 0.04]
+        assert feed.errors == 3 and feed.last_error is None
+        conn.connected = False  # the broker drops us
+        await until(lambda: feed.state != "connected")
+        await until(lambda: feed.last_error is not None)
+        assert "disconnected" in (feed.last_error or "")
+        await until(lambda: feed.state == "connected")
+        feed.set_enabled(False)
+        await until(lambda: feed.state == "off")
+        assert not conn.connected
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    assert clock.now() == T0  # waits are asyncio sleeps, never the wall clock
+
+
+def test_swim_is_configured_only_when_every_setting_is_present(tmp_path: Path) -> None:
+    assert swim_config(make_settings(tmp_path)) is None
+    partial = make_settings(tmp_path, swim_host="tcps://h:55443", swim_vpn="TFMS")
+    assert swim_config(partial) is None
+    full = make_settings(
+        tmp_path, swim_host="tcps://h:55443", swim_vpn="TFMS", swim_username="u",
+        swim_password="p", swim_queue="q",
+    )  # fmt: skip
+    cfg = swim_config(full)
+    assert cfg is not None and cfg.queue == "q" and cfg.trust_store_dir == "/etc/ssl/certs"
+
+
+def test_connector_reports_a_missing_library(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_solace(name: str) -> object:
+        raise ImportError(name)
+
+    monkeypatch.setattr("app.sources.swim.importlib.import_module", no_solace)
+    assert not SolaceConnector.available()
+    conn = SolaceConnector(CFG, lambda _b: None)
+    with pytest.raises(SourceError, match="not installed"):
+        conn.connect()
+    assert not conn.is_connected()
+    conn.close()  # nothing to close: no error

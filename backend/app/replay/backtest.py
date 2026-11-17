@@ -302,7 +302,7 @@ class Backtester:
                 runways=rt.runways,
                 tz=rt.alerts.tz,
                 history=SightingsBook(rt.ctx.db, read_only=True),
-                extras={"airports": rt.airport_index},
+                extras={"airports": rt.airport_index, "swim": rt.swim_extra()},
             )
             engine = BacktestEngine(
                 spec, draft, saved if saved and saved.valid else None,

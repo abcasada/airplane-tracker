@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     receiver_url: str | None = None
     receiver_uat_url: str | None = None
     receiver_interval_s: float = Field(1.0, ge=0.5, le=60)
+    # FAA SWIM SCDS (TFMS flight data): on when host, VPN, username, password and queue are set.
+    swim_host: str | None = None  # e.g. tcps://<scds-host>:55443
+    swim_vpn: str | None = None
+    swim_username: str | None = None
+    swim_password: str | None = None
+    swim_queue: str | None = None
+    swim_trust_store: str = "/etc/ssl/certs"  # directory of CA certificates for TLS
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod
