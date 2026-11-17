@@ -17,6 +17,7 @@ from app.classify.military import ClassifierSettings, Inputs, classify
 from app.context import AppContext
 from app.enrich.datasets import DatasetManager
 from app.enrich.enricher import Enricher
+from app.enrich.hexdb import MIN_INTERVAL_S, HexdbService
 from app.enrich.routes import RouteService
 from app.filters.engine import CompiledFilter
 from app.filters.exclusions import Exclusion, ExclusionIn, ExclusionRepo, is_excluded
@@ -67,8 +68,9 @@ class Runtime:
         self.ctx = ctx
         self.places: list[Place] = []
         self.store = TrackStore()
-        self.enricher = Enricher(ctx.db)
+        self.enricher = Enricher(ctx.db, ctx.clock)
         self.datasets = DatasetManager(ctx.db, ctx.settings.data_dir, ctx.http, ctx.clock)
+        self.hexdb = HexdbService(ctx.db, ctx.http, ctx.clock, ctx.settings.hexdb_enabled)
         self.recorder = Recorder(ctx.settings.data_dir / "recordings")
         self.broker = Broker()
         self.routes = RouteService(ctx.db, ctx.http, ctx.clock)
@@ -125,6 +127,7 @@ class Runtime:
         if self.ctx.settings.run_background:
             self._spawn(self.poller.run(), "poller")
             self._spawn(self._route_loop(), "routes")
+            self._spawn(self._hexdb_loop(), "hexdb")
             self._spawn(self._maintenance(), "maintenance")
 
     async def _seed(self) -> None:
@@ -169,6 +172,33 @@ class Runtime:
             except Exception:
                 log.exception("route lookup failed")
             await asyncio.sleep(5)
+
+    async def _hexdb_loop(self) -> None:
+        while True:
+            try:
+                await self.hexdb_step()
+            except Exception:
+                log.exception("hexdb.io lookup failed")
+            await asyncio.sleep(MIN_INTERVAL_S)
+
+    async def hexdb_step(self) -> None:
+        """One queued hexdb.io lookup; re-enrich the aircraft when an answer arrives."""
+        hex_ = await self.hexdb.flush(lambda h: self.store.get(h) is not None)
+        track = self.store.get(hex_) if hex_ else None
+        if track is not None:
+            self.enricher.forget(track.hex)
+            track.info = await self.enricher.lookup(track.hex)
+            self.classify_track(track)
+
+    def want_hexdb(self, track: Track) -> None:
+        """Queue a hexdb.io lookup when registration, type or operator is still unknown."""
+        info = track.info
+        if info is None or info.hexdb_checked:
+            return
+        pa = info.plane_alert
+        no_operator = not (track.owner_op or track.airline or (pa and pa.operator))
+        if not track.registration or not track.type_code or no_operator:
+            self.hexdb.want(track.hex)
 
     async def _maintenance(self) -> None:
         while True:
@@ -305,6 +335,7 @@ class Runtime:
             type_military_share=stats[1] if stats else None,
             callsign_is_airline=t.airline is not None,
             override=override,
+            registrant_type=info.faa.registrant_type if info and info.faa else None,
         )
 
     def classify_track(self, t: Track) -> None:
@@ -340,6 +371,8 @@ class Runtime:
                     self.source_stats.add(obs.source, obs.hex, now)
             track, is_new = self.store.update(obs)
             await self.enrich_track(track, is_new)
+            if is_new:
+                self.want_hexdb(track)
             self.routes.want(track.callsign, track.lat, track.lon)
             home = self.home()
             if home is not None and track.has_position:
@@ -419,6 +452,8 @@ class Runtime:
                     matches.append(Match(f, compiled, facts))
                     by_hex.setdefault(facts.hex, []).append(f.id)
         self.matches = by_hex
+        for hex_ in by_hex:
+            self.hexdb.prioritize(hex_)
         await self.alerts.process(
             now, matches, ectx.places, [(LiveFacts(t, ectx), ev) for t, ev in events or []]
         )

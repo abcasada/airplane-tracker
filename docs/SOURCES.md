@@ -217,8 +217,8 @@ stops cleanly at the cap. Responses are cached and never exported or committed.
 | VRS standing data (CC0) | airlines, operators | built |
 | adsb.im routeset | routes by callsign | built |
 | Planespotters.net | photos (web UI only, with credit) | built |
-| **FAA Releasable Aircraft Registry** | N-number owner, type, engine, year; daily bulk file, public domain | planned |
-| **hexdb.io** | aircraft info and route by callsign, as a second route source | planned |
+| **FAA Releasable Aircraft Registry** | N-number, registrant name and type (individual, corporation, government…), manufacturer/model, year, aircraft and engine type; public domain | built (weekly, conditional download; see PLAN §5.1) |
+| **hexdb.io** | registration, type and owner for aircraft the local datasets don't know (on demand, ≤1 request per 2 s, ≤2,000 a day, cached 30 days) | built (aircraft endpoint only; its routes are too old to help) |
 | **adsbdb** | routes, third fallback (cached privately, never exported) | planned |
 
 ## Order I'd build them
@@ -227,6 +227,8 @@ stops cleanly at the cap. Responses are cached and never exported or committed.
    keys). *Built.*
 2. **Local receiver** source, as soon as your hardware runs (no keys). *Built; waiting on hardware.*
 3. **FR24** gap-fill and lookups with the budget cap.
-4. **FAA registry + hexdb.io** enrichment.
+4. **FAA registry + hexdb.io** enrichment. *Built.* If the FAA refuses automated downloads
+   (it answered 503 to a plain request on 2026-11-17), download `ReleasableAircraft.zip` in a
+   browser and put it in `/data/datasets/`; the app imports it on the next check or "Update now".
 5. **FAA SWIM** schedule source and `filed_arrival` facts (after you approve the Solace library).
 6. airplanes.live, AeroAPI, ADS-B Exchange when you have access and want them.

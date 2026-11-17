@@ -123,6 +123,7 @@ async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
             "requests": rt.routes.requests,
             "last_error": rt.routes.last_error,
         },
+        "hexdb": rt.hexdb.status(),
         "background": ctx.settings.run_background,
     }
 

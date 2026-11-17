@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     receiver_url: str | None = None
     receiver_uat_url: str | None = None
     receiver_interval_s: float = Field(1.0, ge=0.5, le=60)
+    # hexdb.io lookups for aircraft the local datasets don't know (≤1 per 2 s, daily cap).
+    hexdb_enabled: bool = True
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod
