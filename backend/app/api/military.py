@@ -157,6 +157,7 @@ async def _from_datasets(rt: Runtime, kind: str, ident: str, note: str | None) -
         "plane_alert_cmpg": pa.cmpg if pa else None,
         "plane_alert_operator": pa.operator if pa else None,
         "callsign_is_airline": rt.enricher.airline_for(callsign) is not None,
+        "registrant_type": info.faa.registrant_type if info and info.faa else None,
     }
     return sg.from_snapshot(snap, _type_stats(rt, type_code))
 

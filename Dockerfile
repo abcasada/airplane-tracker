@@ -15,7 +15,10 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
 RUN pip install --no-cache-dir uv==0.11.32
 WORKDIR /app
 COPY backend/pyproject.toml backend/uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+# The Solace client for FAA SWIM (~14 MB, loaded only when SWIM_* is set). Build without it:
+# docker compose build --build-arg UV_EXTRAS=
+ARG UV_EXTRAS="--extra swim"
+RUN uv sync --frozen --no-dev --no-install-project ${UV_EXTRAS}
 
 # ---- Runtime --------------------------------------------------------------------------------
 FROM python:3.13-slim

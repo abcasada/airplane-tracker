@@ -1,18 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { errorMessage, get, put } from '../lib/api'
+  import { errorMessage, get, post, put } from '../lib/api'
   import { toast } from '../lib/toast.svelte'
+  import { fmtAgo, fmtTime } from '../lib/format'
+  import { flightLeg, swimCounts, swimInterest, swimState, swimUsage, type FiledFlight, type SwimStatus } from '../lib/swim'
 
   interface SourceStatus {
     name: string
-    kind: 'area' | 'receiver'
+    kind: 'area' | 'receiver' | 'lookup' | 'schedule'
     enabled: boolean
     healthy: boolean
     open_for_s: number
     last_error: string | null
     requests_today: number
     errors: number
-    budget_unit: 'request' | 'credit'
+    budget_unit: 'request' | 'credit' | 'message'
     budget_per_s: number | null
     budget_per_day: number | null
     used_per_s: number
@@ -21,6 +23,17 @@
     last_latency_ms: number | null
     last_aircraft: number | null
     credits_remaining?: number | null
+    // Paid lookup-only sources (Flightradar24): this calendar month's credits vs the cap.
+    month?: { used: number; cap: number; pace_limit: number; requests: number; exhausted: boolean; resets_at: number }
+    credits_per_flight?: number
+    gap_fill?: boolean
+    lookups?: { on_demand: number; gap_fill: number; cache_hits: number; found: number }
+    swim?: SwimStatus
+  }
+  interface UsageRow {
+    endpoint: string
+    requests: number
+    credits: number
   }
   interface Summary {
     aircraft: number
@@ -36,9 +49,26 @@
 
   let r = $state<Report | null>(null)
   let windowKey = $state<'last_hour' | 'last_24h'>('last_hour')
+  let usage = $state<UsageRow[] | null>(null)
+  let usageBusy = $state(false)
+
+  async function checkUsage() {
+    usageBusy = true
+    try {
+      usage = (await post<{ endpoints: UsageRow[] }>('/api/fr24/usage')).endpoints
+    } catch (e) {
+      toast(errorMessage(e), 'error')
+    } finally {
+      usageBusy = false
+    }
+  }
+  let filed = $state<FiledFlight[]>([])
 
   async function load() {
     r = await get<Report>('/api/sources')
+    if (r.status.some((s) => s.kind === 'schedule')) {
+      filed = (await get<{ flights: FiledFlight[] }>('/api/sources/swim/flights')).flights
+    }
   }
 
   onMount(() => {
@@ -61,6 +91,10 @@
   }
 
   function rate(s: SourceStatus): string {
+    if (s.month) {
+      const m = s.month
+      return `${Math.round(m.used).toLocaleString()} / ${m.cap.toLocaleString()} credits this month (${Math.round((100 * m.used) / Math.max(1, m.cap))}%)`
+    }
     if (s.budget_per_s == null) return s.interval_s ? `every ${s.interval_s} s, no limit` : 'no limit'
     if (s.budget_unit === 'credit') {
       const day = Math.round(s.budget_per_day ?? 0).toLocaleString()
@@ -97,9 +131,17 @@
             {@const s = statusByName.get(name)}
             {@const [seen, unique] = cell(win, name)}
             <tr>
-              <td>{name}{#if s?.kind === 'receiver'} <span class="muted small">(your receiver)</span>{/if}</td>
+              <td>
+                {name}{#if s?.kind === 'receiver'} <span class="muted small">(your receiver)</span>{/if}
+                {#if s?.kind === 'lookup'} <span class="muted small">(paid, lookups only)</span>{/if}
+                {#if s?.kind === 'schedule'} <span class="muted small">(flight plans)</span>{/if}
+              </td>
               <td>
                 {#if !s}<span class="muted">not configured</span>
+                {:else if s.swim}
+                  {@const st = swimState(s.swim, s.enabled)}
+                  <span class={st === 'connected' ? 'ok' : st === 'off' ? 'muted' : 'error'}>{st === 'off' ? '○' : '●'} {st}</span>
+                  {#if s.open_for_s > 0} <span class="muted small">in {Math.round(s.open_for_s)} s</span>{/if}
                 {:else if !s.enabled}<span class="muted">○ off</span>
                 {:else if s.healthy}<span class="ok">● ok</span>
                 {:else}<span class="error">● backing off {Math.round(s.open_for_s)} s</span>{/if}
@@ -111,19 +153,47 @@
                 {/if}
               </td>
               <td class="small">
-                {#if s}
+                {#if s?.swim}
+                  {swimUsage(s.swim)}
+                  <div class="muted">
+                    {swimCounts(s.swim)}{s.swim.last_message_at ? ` · last ${fmtAgo(s.swim.last_message_at)}` : ''}
+                  </div>
+                  <div class="muted">{swimInterest(s.swim)}</div>
+                {:else if s}
                   {rate(s)}
                   <div class="muted">
                     {s.requests_today.toLocaleString()} requests today{s.errors ? `, ${s.errors} errors` : ''}{s.last_latency_ms != null ? ` · ${Math.round(s.last_latency_ms)} ms` : ''}
                     {#if s.credits_remaining != null} · {s.credits_remaining.toLocaleString()} credits left (OpenSky){/if}
                   </div>
+                  {#if s.month && s.lookups}
+                    <div class="muted">
+                      {Math.round(s.used_today).toLocaleString()} credits today · {s.lookups.on_demand} on demand,
+                      {s.lookups.gap_fill} gap-fill{s.gap_fill ? '' : ' (off)'}, {s.lookups.cache_hits} from cache ·
+                      gap-fill paced to {Math.round(s.month.pace_limit).toLocaleString()} so far ·
+                      resets {fmtTime(s.month.resets_at)}
+                      {#if s.month.exhausted}<div class="error">Flightradar24 says this month's credits are used up.</div>{/if}
+                    </div>
+                    <button class="small" disabled={usageBusy} onclick={checkUsage}>Check FR24's own count</button>
+                    {#if usage}
+                      <ul class="muted">
+                        {#each usage as u (u.endpoint)}
+                          <li>{u.endpoint}: {u.credits.toLocaleString()} credits / {u.requests.toLocaleString()} requests (30 days{u.requests ? `, ${(u.credits / u.requests).toFixed(1)} per request` : ''})</li>
+                        {:else}<li>No usage in the last 30 days.</li>{/each}
+                      </ul>
+                      <div class="muted">Estimate used here: {s.credits_per_flight} credits per flight returned (FR24_CREDITS_PER_FLIGHT).</div>
+                    {/if}
+                  {/if}
                 {:else}—{/if}
               </td>
-              <td>{seen.toLocaleString()}</td>
-              <td>
-                <strong>{unique.toLocaleString()}</strong>
-                {#if seen}<span class="muted small">({Math.round((100 * unique) / seen)}%)</span>{/if}
-              </td>
+              {#if s?.kind === 'schedule'}
+                <td class="muted">—</td><td class="muted">—</td>
+              {:else}
+                <td>{seen.toLocaleString()}</td>
+                <td>
+                  <strong>{unique.toLocaleString()}</strong>
+                  {#if seen}<span class="muted small">({Math.round((100 * unique) / seen)}%)</span>{/if}
+                </td>
+              {/if}
             </tr>
           {/each}
         </tbody>
@@ -134,8 +204,39 @@
       ({windowKey === 'last_hour' ? 'last 60–75 min' : 'last 24 h'}). "Only this source" counts aircraft no other
       source reported in that time: what you'd lose without it. Lookups of followed aircraft and receiver
       reports outside the polled areas aren't counted. Budget: at most half of each source's published limit.
+      Paid lookup sources (Flightradar24) are never polled: they answer only lookups from an aircraft's page and
+      fill gaps for aircraft your filters follow or matched once the free feeds lose them, under a monthly
+      credit cap; their positions aren't counted in this table.
       A source switched off here stays configured and can be turned back on at any time.
     </p>
+    {#if r.status.some((s) => s.kind === 'schedule')}
+      <h3>Filed FAA flights for your airports</h3>
+      {#if filed.length}
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th>Flight</th><th>Route</th><th>Type</th><th>Departs</th><th>Arrives</th><th>Status</th></tr></thead>
+            <tbody>
+              {#each filed as f (f.key)}
+                <tr>
+                  <td>{f.acid}</td>
+                  <td>{flightLeg(f)}</td>
+                  <td>{f.aircraft_type ?? '—'}</td>
+                  <td>{fmtTime(f.departure_time)}{#if f.etd_type} <span class="muted small">{f.etd_type.toLowerCase()}</span>{/if}</td>
+                  <td>{fmtTime(f.arrival_time)}{#if f.eta_type} <span class="muted small">{f.eta_type.toLowerCase()}</span>{/if}</td>
+                  <td class="small">{f.status ?? ''}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {:else}
+        <p class="muted small">None yet. US IFR flight plans usually appear hours before departure.</p>
+      {/if}
+      <p class="muted small">
+        From FAA SWIM (TFMS): flights to or from your airport places that haven't arrived. Filters see them through
+        the "Filed plan" fields once the aircraft is in range; most military flights aren't published.
+      </p>
+    {/if}
     {#if r.days.length}
       <h3>Unique aircraft per day (UTC)</h3>
       <div class="table-wrap">

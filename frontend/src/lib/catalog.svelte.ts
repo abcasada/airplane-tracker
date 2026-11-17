@@ -1,5 +1,5 @@
 import { get } from './api'
-import type { SimpleOptions } from './simple'
+import { ANY_VIEWPOINT, defaultPlace, type SimpleOptions } from './simple'
 import type { FieldDef, Place } from './types'
 
 export const OP_LABELS: Record<string, string> = {
@@ -83,17 +83,22 @@ export function opLabel(f: FieldDef | undefined, op: string): string {
   return OP_LABELS[op] ?? op
 }
 
-/** Catalog lookups for simple mode. New place rows follow you, like the templates. */
+/** Whether a field's place picker offers this place (or "any active viewpoint"). */
+export function fieldAcceptsPlace(key: string, place: number): boolean {
+  const f = catalog.byKey[key]
+  if (!f?.place) return false
+  if (place === ANY_VIEWPOINT) return f.any_viewpoint
+  return placesFor(f).some((p) => p.id === place)
+}
+
+/** Catalog lookups for simple mode. New place rows default to your airports and areas. */
 export function simpleOptions(): SimpleOptions {
   return {
     fieldLabel: (key) => catalog.byKey[key]?.label ?? key,
     opLabel: (key, op) => opLabel(catalog.byKey[key], op),
     placeFor: (key) => {
       const f = catalog.byKey[key]
-      if (!f?.place) return null
-      if (f.any_viewpoint) return 0
-      const options = placesFor(f)
-      return (options.find((p) => p.is_home) ?? options[0])?.id ?? null
+      return f ? defaultPlace(f, catalog.places) : null
     },
   }
 }

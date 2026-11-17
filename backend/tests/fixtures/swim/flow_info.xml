@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ns5:tfmDataService xmlns:ns5="urn:us:gov:dot:faa:atm:tfm:tfmdataservice" xmlns:ns12="urn:us:gov:dot:faa:atm:tfm:flowinformation">
+  <ns5:fiOutput>
+    <ns12:fiMessage sensitivity="A" sourceFacility="TFMS" sourceTimeStamp="2027-01-15T12:00:00Z" msgType="GADV">
+      <ns12:generalAdvisory><ns12:advisoryTitle>TEST ADVISORY</ns12:advisoryTitle></ns12:generalAdvisory>
+    </ns12:fiMessage>
+  </ns5:fiOutput>
+</ns5:tfmDataService>

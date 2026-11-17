@@ -63,6 +63,8 @@ class ClassifierSettings(BaseModel):
         default_factory=lambda: list(DEFAULT_GOVERNMENT_KEYWORDS)
     )
     police_keywords: list[str] = Field(default_factory=lambda: list(DEFAULT_POLICE_KEYWORDS))
+    # FAA registrant types that mark an aircraft government (US civil register only).
+    government_registrant_types: list[str] = Field(default_factory=lambda: ["government"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +82,7 @@ class Inputs:
     type_military_share: float | None
     callsign_is_airline: bool
     override: bool | None
+    registrant_type: str | None = None  # FAA registry, e.g. "government"
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,8 +193,10 @@ def classify(i: Inputs, s: ClassifierSettings) -> Classification:
         remaining *= 1.0 - min(max(weight, 0.0), 1.0)
     score = round(1.0 - remaining, 3)
 
-    government = (i.plane_alert_cmpg or "").lower() == "gov" or bool(
-        match_keyword(i.owner_op, s.government_keywords)
+    government = (
+        (i.plane_alert_cmpg or "").lower() == "gov"
+        or bool(match_keyword(i.owner_op, s.government_keywords))
+        or (i.registrant_type is not None and i.registrant_type in s.government_registrant_types)
     )
     police = (i.plane_alert_cmpg or "").lower() == "pol" or bool(
         match_keyword(i.owner_op, s.police_keywords)

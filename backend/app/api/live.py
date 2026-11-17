@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator
+from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -29,7 +30,7 @@ async def aircraft(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
         "now": ectx.now,
         "home_id": home.id if home else None,
         "aircraft": rt.summaries(rt.facts_for_all(ectx)),
-        "sources": [s.name for s in rt.poller.slots],  # enabled, for the attribution line
+        "sources": [s["name"] for s in rt.source_status()],  # for the attribution line
     }
 
 
@@ -71,6 +72,9 @@ async def aircraft_detail(hex_: str, ctx: Ctx, _: CurrentUser) -> dict[str, Any]
             if pa
             else None
         ),
+        "faa": asdict(info.faa) if info and info.faa else None,
+        # Fields filled from the FAA registry or hexdb.io because nothing earlier had them.
+        "filled_from": dict(info.provenance) if info else {},
         "history": [[p.t, p.lat, p.lon, p.alt_ft] for p in track.history],
         "first_seen": track.first_seen,
     }
@@ -99,7 +103,7 @@ async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
         "tracks": len(rt.store),
         "places_active": len(rt.active_places()),
         "circles": [c.__dict__ for c in rt.circles()],
-        "sources": rt.poller.status(),
+        "sources": rt.source_status(),
         "datasets": await rt.datasets.status(),
         "dataset_busy": rt.datasets.busy,
         "recordings": rt.recorder.usage(),
@@ -123,6 +127,7 @@ async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
             "requests": rt.routes.requests,
             "last_error": rt.routes.last_error,
         },
+        "hexdb": rt.hexdb.status(),
         "background": ctx.settings.run_background,
     }
 
@@ -131,9 +136,18 @@ async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
 async def sources_report(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
     """Per source: status, use vs budget, and aircraft seen / seen by no other source."""
     rt = ctx.rt()
-    status_ = rt.poller.status()
+    status_ = rt.source_status()
     report = rt.source_stats.report(ctx.clock.now(), [s["name"] for s in status_])
     return {"status": status_, **report}
+
+
+@router.get("/sources/swim/flights")
+async def swim_flights(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
+    """Filed FAA flights to or from your airport places that haven't arrived yet."""
+    rt = ctx.rt()
+    codes = {p.airport_icao for p in rt.places if p.role == "airport" and p.airport_icao}
+    flights = rt.swim_flights.upcoming(codes, ctx.clock.now()) if rt.swim else []
+    return {"configured": rt.swim is not None, "flights": [f.summary() for f in flights]}
 
 
 class SourceToggle(BaseModel):
@@ -146,7 +160,7 @@ async def toggle_source(
 ) -> dict[str, Any]:
     """Switch a configured source on or off (it stays configured; keys still come from env)."""
     rt = ctx.rt()
-    if name not in {s.name for s in rt.poller.slots}:
+    if name not in rt.source_names():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such source")
     prefs = SourcePrefs.model_validate(await ctx.db.get_json("sources", {}))
     off = [n for n in prefs.disabled if n != name] + ([] if body.enabled else [name])

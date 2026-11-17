@@ -19,6 +19,11 @@ dependencies = [
     "websockets>=17.2",
 ]
 
+[project.optional-dependencies]
+# FAA SWIM (SCDS) needs Solace's client (a native library, ~14 MB installed). Imported only when
+# SWIM_* is set; the Dockerfile installs it, local dev and tests don't need it.
+swim = ["solace-pubsubplus>=1.11.0"]
+
 [tool.uv]
 package = false
 

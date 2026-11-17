@@ -17,7 +17,8 @@ from app.classify.military import ClassifierSettings, Inputs, classify
 from app.context import AppContext
 from app.enrich.datasets import DatasetManager
 from app.enrich.enricher import Enricher
-from app.enrich.routes import RouteService
+from app.enrich.hexdb import MIN_INTERVAL_S, HexdbService
+from app.enrich.routes import Route, RouteService
 from app.filters.engine import CompiledFilter
 from app.filters.exclusions import Exclusion, ExclusionIn, ExclusionRepo, is_excluded
 from app.filters.facts import EvalContext, LiveFacts
@@ -31,10 +32,23 @@ from app.filters.models import (
 )
 from app.filters.repo import FilterRepo
 from app.history import SightingsBook, day_of
+from app.ingest.fr24 import (
+    GAP_FILL_TICK_S,
+    LOST_AFTER_S,
+    MAX_GAP_TARGETS,
+    GapFiller,
+    GapTarget,
+    LookupRefusedError,
+    LookupResult,
+    build_fr24,
+    matched_by,
+)
 from app.ingest.planner import PlannerConfig, QueryCircle, plan
 from app.ingest.poller import Poller, SourcePrefs
 from app.ingest.recorder import Recorder
 from app.ingest.sourcestats import SourceStats
+from app.ingest.swim import SwimFeed, swim_config
+from app.ingest.swimstore import FiledFlight, SwimFlights
 from app.live.broker import Broker
 from app.notify.actions import MUTE_SECONDS
 from app.notify.base import Notifier
@@ -47,6 +61,8 @@ from app.predict.engine import MIN_CYCLE_S, PredictionSettings, PredictionState,
 from app.replay.backtest import Backtester
 from app.sources.base import SourceBatch
 from app.sources.registry import build_sources
+from app.sources.swim import NAME as SWIM_NAME
+from app.sources.swim import normalize_acid
 from app.tracks import events as flight_events
 from app.tracks.store import Track, TrackStore
 from app.watch import Watchlist
@@ -60,6 +76,11 @@ LIVE_PUBLISH_MIN_INTERVAL_S = 2.0
 # Receivers are read every second; recording every 5th second is plenty for replay.
 RECEIVER_RECORD_EVERY_S = 5.0
 FEED_EVAL_EVERY_S = 0.9
+FR24_CIRCLE = QueryCircle("fr24", 0.0, 0.0, 0.0, GAP_FILL_TICK_S, "fr24")
+# How long FR24 keeps filling gaps for an aircraft that matched a filter before it was lost.
+FR24_FOLLOW_MATCHED_S = 1800.0
+SWIM_FLUSH_INTERVAL_S = 30.0
+SWIM_PRUNE_INTERVAL_S = 3600.0
 
 
 class Runtime:
@@ -67,8 +88,9 @@ class Runtime:
         self.ctx = ctx
         self.places: list[Place] = []
         self.store = TrackStore()
-        self.enricher = Enricher(ctx.db)
+        self.enricher = Enricher(ctx.db, ctx.clock)
         self.datasets = DatasetManager(ctx.db, ctx.settings.data_dir, ctx.http, ctx.clock)
+        self.hexdb = HexdbService(ctx.db, ctx.http, ctx.clock, ctx.settings.hexdb_enabled)
         self.recorder = Recorder(ctx.settings.data_dir / "recordings")
         self.broker = Broker()
         self.routes = RouteService(ctx.db, ctx.http, ctx.clock)
@@ -100,6 +122,17 @@ class Runtime:
             self.on_batch,
             watch=self.watch,
         )
+        self.fr24 = build_fr24(ctx.settings, ctx.http, ctx.clock, ctx.db)
+        self.gap_filler = GapFiller()
+        # hex → (registration, callsign, last matched) for matched aircraft the free feeds lost
+        self.lost_matched: dict[str, tuple[str | None, str | None, float]] = {}
+        self.swim_flights = SwimFlights(ctx.db)
+        swim_cfg = swim_config(ctx.settings)
+        self.swim = (
+            SwimFeed(swim_cfg, ctx.clock, self.swim_flights, self.on_swim_flights)
+            if swim_cfg is not None
+            else None
+        )
         self.matches: dict[str, list[int]] = {}  # hex → matching filter ids (last cycle)
         self.last_eval_ms = 0.0
         self.last_eval_at: float | None = None
@@ -121,10 +154,21 @@ class Runtime:
         await self.watch.refresh(self.filters)
         await self.alerts.load()
         self.source_stats.load(await self.ctx.db.get_json("source_stats", {}))
+        if self.fr24 is not None:
+            await self.fr24.load()
         await self.reload_sources()
+        if self.swim is not None:
+            await self.swim_flights.load(self.ctx.clock.now())
+            self.update_swim_interest()
         if self.ctx.settings.run_background:
             self._spawn(self.poller.run(), "poller")
+            if self.fr24 is not None:
+                self._spawn(self._fr24_loop(), "fr24")
+            if self.swim is not None:
+                self._spawn(self.swim.run(), "swim")
+                self._spawn(self._swim_maintenance(), "swim-store")
             self._spawn(self._route_loop(), "routes")
+            self._spawn(self._hexdb_loop(), "hexdb")
             self._spawn(self._maintenance(), "maintenance")
 
     async def _seed(self) -> None:
@@ -153,8 +197,9 @@ class Runtime:
         await self.backtester.cancel_all()
         try:
             await self.sightings.flush(self.ctx.clock.now())
+            await self.swim_flights.flush()
         except Exception:
-            log.exception("could not save sightings")
+            log.exception("could not save sightings or SWIM flights")
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -165,10 +210,37 @@ class Runtime:
             try:
                 if await self.routes.flush():
                     for t in self.store.values():
-                        t.route = self.routes.get(t.callsign)
+                        t.route = self.route_for(t)
             except Exception:
                 log.exception("route lookup failed")
             await asyncio.sleep(5)
+
+    async def _hexdb_loop(self) -> None:
+        while True:
+            try:
+                await self.hexdb_step()
+            except Exception:
+                log.exception("hexdb.io lookup failed")
+            await asyncio.sleep(MIN_INTERVAL_S)
+
+    async def hexdb_step(self) -> None:
+        """One queued hexdb.io lookup; re-enrich the aircraft when an answer arrives."""
+        hex_ = await self.hexdb.flush(lambda h: self.store.get(h) is not None)
+        track = self.store.get(hex_) if hex_ else None
+        if track is not None:
+            self.enricher.forget(track.hex)
+            track.info = await self.enricher.lookup(track.hex)
+            self.classify_track(track)
+
+    def want_hexdb(self, track: Track) -> None:
+        """Queue a hexdb.io lookup when registration, type or operator is still unknown."""
+        info = track.info
+        if info is None or info.hexdb_checked:
+            return
+        pa = info.plane_alert
+        no_operator = not (track.owner_op or track.airline or (pa and pa.operator))
+        if not track.registration or not track.type_code or no_operator:
+            self.hexdb.want(track.hex)
 
     async def _maintenance(self) -> None:
         while True:
@@ -185,6 +257,19 @@ class Runtime:
                 log.exception("maintenance failed")
             await asyncio.sleep(DATASET_CHECK_INTERVAL_S)
 
+    async def _swim_maintenance(self) -> None:
+        last_prune = 0.0
+        while True:
+            await asyncio.sleep(SWIM_FLUSH_INTERVAL_S)
+            try:
+                await self.swim_flights.flush()
+                now = self.ctx.clock.now()
+                if now - last_prune >= SWIM_PRUNE_INTERVAL_S:
+                    last_prune = now
+                    await self.swim_flights.prune(now)
+            except Exception:
+                log.exception("SWIM store maintenance failed")
+
     # ---- configuration reloads ---------------------------------------------------------------
 
     async def reload_places(self) -> None:
@@ -192,6 +277,7 @@ class Runtime:
         self.coverage.load(await self.ctx.db.get_json("coverage", {}))
         await self.load_runways()
         self._compile()
+        self.update_swim_interest()
 
     async def load_runways(self) -> None:
         out: dict[int, list[Runway]] = {}
@@ -211,6 +297,7 @@ class Runtime:
         self.exclusions = await ExclusionRepo(self.ctx.db, self.ctx.clock).all()
         self._compile()
         await self.watch.refresh(self.filters)
+        self.update_swim_interest()
 
     async def reload_prediction(self) -> None:
         s = PredictionSettings.model_validate(await self.ctx.db.get_json("prediction", {}))
@@ -226,6 +313,135 @@ class Runtime:
     async def reload_sources(self) -> None:
         prefs = SourcePrefs.model_validate(await self.ctx.db.get_json("sources", {}))
         self.poller.set_disabled(prefs.disabled)
+        if self.fr24 is not None:
+            self.fr24.enabled = self.fr24.name not in prefs.disabled
+        if self.swim is not None:
+            self.swim.set_enabled(SWIM_NAME not in prefs.disabled)
+
+    def source_status(self) -> list[dict[str, Any]]:
+        """Every configured source: the polled ones, the lookup-only paid ones, then SWIM."""
+        return (
+            self.poller.status()
+            + ([self.fr24.status()] if self.fr24 is not None else [])
+            + ([self.swim.status()] if self.swim is not None else [])
+        )
+
+    def source_names(self) -> set[str]:
+        names = {s.name for s in self.poller.slots}
+        if self.fr24 is not None:
+            names.add(self.fr24.name)
+        if self.swim is not None:
+            names.add(self.swim.name)
+        return names
+
+    # ---- Flightradar24 (paid): on demand and gap-fill only -----------------------------------
+
+    async def _fr24_loop(self) -> None:
+        while True:
+            try:
+                await self.fr24_gap_fill()
+            except Exception:
+                log.exception("fr24 gap-fill failed")
+            await asyncio.sleep(GAP_FILL_TICK_S)
+
+    @staticmethod
+    def _free_heard(t: Track | None, now: float) -> bool:
+        """Whether a free source (anything but FR24) heard it recently."""
+        return t is not None and any(
+            s != "fr24" and now - ts <= LOST_AFTER_S for s, ts in t.heard_by.items()
+        )
+
+    async def gap_targets(self, now: float) -> list[GapTarget]:
+        """Filter candidates the free feeds lost: followed aircraft (`watch.py`), and aircraft
+        that matched a filter in the last 30 min."""
+        out: list[GapTarget] = []
+        watched: set[str] = set()
+        for e in self.watch.entries.values():
+            watched |= e.hexes
+            tracks = [t for h in sorted(e.hexes) if (t := self.store.get(h)) is not None]
+            if any(self._free_heard(t, now) for t in tracks):
+                continue
+            reg = e.value if e.kind == "reg" else None
+            for h in sorted(e.hexes):
+                if reg:
+                    break
+                known = self.store.get(h)
+                reg = known.registration if known else None
+                reg = reg or (await self.enricher.lookup(h)).registration
+            cs = max(tracks, key=lambda t: t.last_seen).callsign if tracks else None
+            out.append(GapTarget(f"watch:{e.kind}:{e.value}", reg, cs))
+        for hex_ in self.matches:
+            t = self.store.get(hex_)
+            if t is not None and (t.registration or t.callsign):
+                self.lost_matched[hex_] = (t.registration, t.callsign, now)
+        while len(self.lost_matched) > MAX_GAP_TARGETS:
+            del self.lost_matched[min(self.lost_matched, key=lambda h: self.lost_matched[h][2])]
+        for hex_, (reg, cs, at) in list(self.lost_matched.items()):
+            if now - at > FR24_FOLLOW_MATCHED_S:
+                del self.lost_matched[hex_]
+            elif hex_ not in watched and not self._free_heard(self.store.get(hex_), now):
+                out.append(GapTarget(f"hex:{hex_}", reg, cs))
+        return out[:MAX_GAP_TARGETS]
+
+    async def fr24_gap_fill(self) -> int:
+        """One gap-fill round: a single FR24 request for the lost candidates that are due.
+        Returns the number of positions it added."""
+        svc = self.fr24
+        if svc is None or not svc.enabled or not svc.gap_fill_enabled:
+            return 0
+        now = self.ctx.clock.now()
+        due = self.gap_filler.due(await self.gap_targets(now), now)
+        if not due:
+            return 0
+        regs = [t.registration for t in due if t.registration]
+        css = [t.callsign for t in due if not t.registration and t.callsign]
+        try:
+            res = await svc.lookup(regs, css, "gap_fill")
+        except LookupRefusedError as e:
+            for t in due:  # cap, pace, rate or an error: not a miss, just later
+                self.gap_filler.wait(t, now, max(e.retry_in_s or 0.0, 600.0))
+            return 0
+        for t in due:
+            self.gap_filler.done(t, matched_by(res.flights, t), now)
+        return await self.ingest_fr24(res)
+
+    async def ingest_fr24(self, res: LookupResult) -> int:
+        batch = res.batch
+        for o in batch.observations:
+            self.watch.learn(o.hex, o.registration, batch.fetched_at)
+        if batch.observations:
+            await self.on_batch(batch, FR24_CIRCLE)
+        return len(batch.observations)
+
+    def update_swim_interest(self) -> None:
+        """SWIM keeps flights from/to your airport places and those of followed aircraft."""
+        if self.swim is None:
+            return
+        airports = {p.airport_icao for p in self.places if p.role == "airport" and p.airport_icao}
+        acids = {
+            a for e in self.watch.entries.values()
+            if e.kind == "reg" and (a := normalize_acid(e.value))
+        }  # fmt: skip
+        self.swim.set_interest(airports, acids)
+
+    async def on_swim_flights(self, flights: list[FiledFlight]) -> None:
+        """New or changed flight plans: refresh the route of aircraft flying them."""
+        acids = {f.acid for f in flights}
+        for t in self.store.values():
+            if normalize_acid(t.callsign) in acids or normalize_acid(t.registration) in acids:
+                t.route = self.route_for(t)
+
+    def swim_extra(self) -> SwimFlights | None:
+        """Filed flights for the `filed_*` filter fields; None when SWIM isn't configured."""
+        return self.swim_flights if self.swim is not None else None
+
+    def route_for(self, t: Track) -> Route | None:
+        """A filed FAA flight plan first, then the callsign route databases."""
+        if self.swim is not None:
+            f = self.swim_flights.best_for(t.callsign, t.registration, t.last_seen)
+            if f is not None and (route := self.swim_flights.route_for(f)) is not None:
+                return route
+        return self.routes.get(t.callsign)
 
     async def reload_classifier(self) -> None:
         self.classifier = ClassifierSettings.model_validate(
@@ -305,6 +521,7 @@ class Runtime:
             type_military_share=stats[1] if stats else None,
             callsign_is_airline=t.airline is not None,
             override=override,
+            registrant_type=info.faa.registrant_type if info and info.faa else None,
         )
 
     def classify_track(self, t: Track) -> None:
@@ -340,7 +557,10 @@ class Runtime:
                     self.source_stats.add(obs.source, obs.hex, now)
             track, is_new = self.store.update(obs)
             await self.enrich_track(track, is_new)
-            self.routes.want(track.callsign, track.lat, track.lon)
+            if is_new:
+                self.want_hexdb(track)
+            if track.route is None or track.route.source != "faa-swim":
+                self.routes.want(track.callsign, track.lat, track.lon)
             home = self.home()
             if home is not None and track.has_position:
                 assert track.lat is not None and track.lon is not None
@@ -362,13 +582,14 @@ class Runtime:
             track.airline_callsign = track.callsign
         if is_new or callsign_changed or track.classification is None:
             self.classify_track(track)
-        track.route = self.routes.get(track.callsign)
+        track.route = self.route_for(track)
 
     async def on_batch(self, batch: SourceBatch, circle: QueryCircle) -> None:
         async with self._lock:
             await self.ingest(batch, circle)
             every = RECEIVER_RECORD_EVERY_S if circle.tier == "feed" else 0.0
-            await asyncio.to_thread(self.recorder.write, batch, every)
+            if batch.source != "fr24":  # FR24's terms: no storing its data beyond the cache
+                await asyncio.to_thread(self.recorder.write, batch, every)
             if self.source_stats.dirty:
                 self.source_stats.dirty = False
                 await self.ctx.db.set_json("source_stats", self.source_stats.to_json())
@@ -388,6 +609,7 @@ class Runtime:
         tz: ZoneInfo = self.alerts.tz
         extras = {
             "runways": self.runways, "sightings": self.sightings, "airports": self.airport_index,
+            "swim": self.swim_extra(),
         }  # fmt: skip
         return EvalContext(now or self.ctx.clock.now(), self.places_by_id(), tz, extras)
 
@@ -419,6 +641,8 @@ class Runtime:
                     matches.append(Match(f, compiled, facts))
                     by_hex.setdefault(facts.hex, []).append(f.id)
         self.matches = by_hex
+        for hex_ in by_hex:
+            self.hexdb.prioritize(hex_)
         await self.alerts.process(
             now, matches, ectx.places, [(LiveFacts(t, ectx), ev) for t, ev in events or []]
         )

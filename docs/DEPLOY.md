@@ -72,6 +72,10 @@ The receiver is reached from inside the container, so use the Pi's IP address (o
 | FlyItalyADSB | `FLYITALY_API_KEY=…` (free key by email at flyitalyadsb.com) | ≤50% of the free tier's 300,000 requests/month (~1 request every 18 s) |
 | Your receiver | `RECEIVER_URL=http://<pi-ip>/tar1090/data/aircraft.json` (ultrafeeder/readsb); optional `RECEIVER_UAT_URL` for dump978 (978 MHz UAT) | none: read every second (`RECEIVER_INTERVAL_S`) over your LAN |
 | OpenSky Network | `OPENSKY_CLIENT_ID=…`, `OPENSKY_CLIENT_SECRET=…` (API client from your account page); `OPENSKY_DAILY_CREDITS=8000` if you're an active feeder | ≤50% of the daily credits (default 2,000 of 4,000: one small-area request every ~43 s) |
+| Flightradar24 (paid) | `FR24_API_KEY=…` (Explorer plan at fr24api.flightradar24.com); optional `FR24_MONTHLY_CREDITS=20000`, `FR24_CREDITS_PER_FLIGHT=8`, `FR24_GAP_FILL=false` | never polled: on-demand lookups and gap-fill only, ≤1 request per 12 s, hard monthly credit cap (default 20,000 of 30,000) |
+| FAA SWIM (flight plans) | `SWIM_HOST=tcps://…:55443`, `SWIM_VPN=…`, `SWIM_USERNAME=…`, `SWIM_PASSWORD=…`, `SWIM_QUEUE=…`, all from your SCDS subscription | none: a pushed stream the app filters to your airport places; one connection, reconnects back off up to 10 min |
+
+FAA SWIM needs the Solace client library, which the image installs by default (about 15 MB on disk, ~7 MB of RAM only when SWIM is configured; `docker compose build --build-arg UV_EXTRAS=` leaves it out). It connects out over TLS to port 55443 and checks the server certificate against the image's CA store. The System → Sources row shows "connected" and messages per minute once it works; "Solace library not installed" means the image was built without it.
 
 ## 5. Install on your phone
 

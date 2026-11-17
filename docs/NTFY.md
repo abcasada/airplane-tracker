@@ -4,6 +4,8 @@ Airplane Tracker sends phone notifications through your own [ntfy](https://ntfy.
 ntfy separately (its own container and Cloudflare Tunnel hostname); the app only needs its URL, a
 topic and a token.
 
+**Already running ntfy?** Skip to step 2: you only need a publishing user and token for the app.
+
 ## 1. Run ntfy
 
 `server.yml` (mount it at `/etc/ntfy/server.yml`):
@@ -18,7 +20,31 @@ auth-default-access: "deny-all"         # private: nothing without a login or to
 attachment-cache-dir: "/var/cache/ntfy/attachments"
 ```
 
-`compose.yaml` for ntfy (separate from this app):
+Then pick how Cloudflare reaches it.
+
+**Option A: the server's shared tunnel** (one `cloudflared` for all apps, like this app's own
+setup in `DEPLOY.md`). Publish ntfy on loopback only and add a route to the shared tunnel:
+
+```yaml
+services:
+  ntfy:
+    image: binwiederhier/ntfy:v2.34.0   # ≥ 2.16 (needed to update notifications in place)
+    command: serve
+    restart: unless-stopped
+    ports: ["127.0.0.1:2586:80"]        # loopback only; the shared tunnel connects here
+    volumes:
+      - ./server.yml:/etc/ntfy/server.yml:ro
+      - ntfy-cache:/var/cache/ntfy
+      - ntfy-lib:/var/lib/ntfy
+volumes:
+  ntfy-cache: {}
+  ntfy-lib: {}
+```
+
+In Cloudflare Zero Trust, add a public hostname (e.g. `ntfy.example.com`) on the shared tunnel
+pointing to `http://localhost:2586` (if `cloudflared` runs with host networking).
+
+**Option B: ntfy with its own tunnel.** `compose.yaml` for ntfy (separate from this app):
 
 ```yaml
 services:
@@ -46,11 +72,16 @@ volumes:
 ```
 
 In Cloudflare Zero Trust, give that tunnel a public hostname (e.g. `ntfy.example.com`) pointing to
-`http://ntfy:80`. Don't put Cloudflare Access in front of it: the phone app can't log in through it,
+`http://ntfy:80`.
+
+Either way, don't put Cloudflare Access in front of it: the phone app can't log in through it,
 so ntfy's own accounts and tokens protect it instead. ntfy keeps its WebSocket alive every 45 s,
 under Cloudflare's ~100 s idle limit.
 
 ## 2. Users, topic and tokens
+
+Run these in ntfy's compose directory (or use `docker exec <ntfy-container> ntfy …` from anywhere).
+If you already have a user for your phone, skip the first and third lines.
 
 ```bash
 docker compose exec ntfy ntfy user add you                 # your phone logs in as this user
@@ -66,8 +97,9 @@ Pick a topic name that's hard to guess, e.g. `planes-k3v9q2m7x1` (the Settings p
 
 Settings → Notifications (ntfy), or `.env`:
 
-- **URL:** `https://ntfy.example.com`. If both stacks share the `ntfy` Docker network you can
-  use `http://ntfy` instead (add the network to this app's compose file as an external network).
+- **URL:** `https://ntfy.example.com`. This works from the app container as long as it has internet
+  access, whichever tunnel option you chose. If both stacks share a Docker network you can use
+  `http://ntfy` instead (add the network to this app's compose file as an external network).
 - **Topic:** the name you picked.
 - **Token:** the `tk_…` from step 2.
 - **`PUBLIC_URL`** in `.env` must be set: notifications use it for "tap to open" and for the

@@ -1,16 +1,18 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { catalog, opLabel, placesFor, simpleOptions } from '../lib/catalog.svelte'
+  import { catalog, fieldAcceptsPlace, opLabel, placesFor, simpleOptions } from '../lib/catalog.svelte'
   import {
     emptyForm,
+    followPlace,
     fromTree,
     rowIsEmpty,
     rowWarning,
+    sectionOf,
     setRangeEnd,
     toTree,
     type SimpleRow,
   } from '../lib/simple'
-  import type { Group } from '../lib/types'
+  import type { FieldDef, Group } from '../lib/types'
   import ChipInput from './ChipInput.svelte'
 
   let {
@@ -54,8 +56,14 @@
 
   function setPlace(row: SimpleRow, raw: string) {
     row.place = raw === '' ? null : Number(raw)
+    followPlace(form, row, fieldAcceptsPlace)
     sync()
   }
+
+  const SECTION_TITLES = {
+    where: 'At or headed to your places',
+    what: 'Which aircraft',
+  } as const
 
   function clearRow(row: SimpleRow) {
     row.values = []
@@ -73,9 +81,28 @@
   {#if filled === 0}<strong>With nothing filled in, the filter never matches.</strong>{/if}
 </p>
 
+{#snippet placePicker(row: SimpleRow, fd: FieldDef, word: string)}
+  {@const places = placesFor(fd)}
+  <span class="muted small">{word}</span>
+  <select
+    class="place"
+    value={row.place ?? ''}
+    onchange={(e) => setPlace(row, (e.currentTarget as HTMLSelectElement).value)}
+    aria-label={`${fd.label}: place`}
+  >
+    {#if fd.any_viewpoint}<option value={0}>Any active viewpoint</option>{/if}
+    {#if places.length === 0 && !fd.any_viewpoint}<option value="">No suitable place yet</option>{/if}
+    {#each places as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
+  </select>
+{/snippet}
+
 <div class="rows">
-  {#each form as row (row.field)}
+  {#each form as row, i (row.field)}
     {@const fd = catalog.byKey[row.field]}
+    {@const section = sectionOf(row.field)}
+    {#if section && (i === 0 || sectionOf(form[i - 1].field) !== section)}
+      <h4 class="section">{SECTION_TITLES[section]}</h4>
+    {/if}
     {#if fd}
       {@const warn = rowWarning(row)}
       <div class="srow" class:filled={!rowIsEmpty(row)}>
@@ -107,13 +134,16 @@
               {/each}
             </div>
           {:else if row.kind === 'flag'}
-            <div class="segmented" role="group" aria-label={fd.label}>
-              <button type="button" class:on={row.flag === null} onclick={() => setFlag(row, null)}>Any</button>
-              <button type="button" class:on={row.flag === true} onclick={() => setFlag(row, true)}>Yes</button>
-              <button type="button" class:on={row.flag === false} onclick={() => setFlag(row, false)}>No</button>
+            <div class="inline">
+              <div class="segmented" role="group" aria-label={fd.label}>
+                <button type="button" class:on={row.flag === null} onclick={() => setFlag(row, null)}>Any</button>
+                <button type="button" class:on={row.flag === true} onclick={() => setFlag(row, true)}>Yes</button>
+                <button type="button" class:on={row.flag === false} onclick={() => setFlag(row, false)}>No</button>
+              </div>
+              {#if fd.place}{@render placePicker(row, fd, 'at')}{/if}
             </div>
           {:else}
-            <div class="range">
+            <div class="inline">
               <span class="op muted" title={opLabel(fd, row.minStrict ? 'gt' : 'ge')}>{row.minStrict ? '>' : '≥'}</span>
               <input
                 type="number"
@@ -135,20 +165,7 @@
                 aria-label={`${fd.label} maximum`}
               />
               {#if fd.unit}<span class="muted">{fd.unit}</span>{/if}
-              {#if fd.place}
-                {@const places = placesFor(fd)}
-                <span class="muted small">from</span>
-                <select
-                  class="place"
-                  value={row.place ?? ''}
-                  onchange={(e) => setPlace(row, (e.currentTarget as HTMLSelectElement).value)}
-                  aria-label="Place"
-                >
-                  {#if fd.any_viewpoint}<option value={0}>Any active viewpoint</option>{/if}
-                  {#if places.length === 0 && !fd.any_viewpoint}<option value="">No suitable place yet</option>{/if}
-                  {#each places as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
-                </select>
-              {/if}
+              {#if fd.place}{@render placePicker(row, fd, row.field === 'distance_nm' ? 'from' : 'at')}{/if}
             </div>
           {/if}
           {#if warn}<p class="warn small">⚠ {warn}</p>{/if}
@@ -167,6 +184,17 @@
     display: flex;
     flex-direction: column;
   }
+  .section {
+    margin: 14px 0 2px;
+    font-size: 0.85em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+  }
+  .section:first-child {
+    margin-top: 0;
+  }
   .srow {
     display: grid;
     grid-template-columns: minmax(150px, 190px) 1fr;
@@ -175,7 +203,8 @@
     padding: 8px 0;
     border-top: 1px solid var(--border);
   }
-  .srow:first-child {
+  .srow:first-child,
+  .section + .srow {
     border-top: 0;
   }
   .label {
@@ -225,13 +254,13 @@
     background: var(--accent);
     color: var(--accent-contrast);
   }
-  .range {
+  .inline {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
   }
-  .range input {
+  .inline input {
     width: 7.5em;
   }
   .op {

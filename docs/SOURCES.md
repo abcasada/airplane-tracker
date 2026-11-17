@@ -170,8 +170,21 @@ stops cleanly at the cap. Responses are cached and never exported or committed.
   large receiver network, and positions where community feeds have gaps.
 - **Doesn't add much for military:** FR24 filters aircraft whose operators ask to be hidden, which
   includes much military traffic. The community aggregators are unfiltered.
-- **Your part:** subscribe to Explorer at fr24api.flightradar24.com → `FR24_API_TOKEN`; pick a
-  monthly cap.
+- **Built 2026-11-17** (mock-tested only): lookups by registration/callsign on
+  `/api/live/flight-positions/full` (FR24 can't search by hex), from the aircraft page's "Look up
+  on Flightradar24" and as gap-fill for followed or recently matched aircraft the free feeds lost
+  for 90 s (each every 5 min while found, backing off to 6 h when not; paced to an even share of
+  the month). Cap enforced per calendar month (UTC); the Sources report shows credits used vs cap,
+  has the on/off switch, and can fetch FR24's own 30-day count from `/api/usage`. Credits per
+  flight are an estimate (`FR24_CREDITS_PER_FLIGHT`, default 8) until that count calibrates it.
+  Design: `docs/PLAN.md` §3.4.
+- **Terms:** FR24 API data is for the subscriber's own use. The app credits Flightradar24 (with a
+  link) wherever its data shows, never records, exports or commits it, and keeps only a short-lived
+  private cache.
+- **Your part:** subscribe to Explorer at fr24api.flightradar24.com → `FR24_API_KEY` (the SDK's
+  name `FR24_API_TOKEN` works too); optionally `FR24_MONTHLY_CREDITS` (default 20,000),
+  `FR24_GAP_FILL=false` for on-demand lookups only. Then check "Check FR24's own count" after a
+  few lookups and set `FR24_CREDITS_PER_FLIGHT` to what it shows.
 
 ### ADS-B Exchange (optional)
 
@@ -194,12 +207,35 @@ stops cleanly at the cap. Responses are cached and never exported or committed.
 - **Adds:** filed flight plans and flight status for US IFR flights, typically many hours before
   departure: "a C-17 has filed into KSLN for 14:20" style alerts. Sensitive flights (most military)
   are reportedly excluded.
-- **Cost to the app:** needs Solace's JMS client library (`solace-pubsubplus`, a native library of
-  tens of MB) and processes a national stream locally (modest CPU/RAM, still one process).
-- **Your part:** register at data.faa.gov, then in the SWIFT portal (portal.swim.faa.gov) create an
-  SCDS subscription to **TFMS Flight Data (TFMData)**. You'll get a Solace host, message VPN,
-  username, password and queue name → `SWIM_HOST`, `SWIM_VPN`, `SWIM_USERNAME`, `SWIM_PASSWORD`,
-  `SWIM_QUEUE`. Questions: scds@faa.gov.
+- **Cost to the app:** Solace's client library (`solace-pubsubplus`, Apache-2.0, ~15 MB on disk,
+  ~7 MB RAM once loaded; installed in the image, loaded only when SWIM is configured) and one
+  national stream that the app filters by message header before parsing (modest CPU).
+- **Built** (2026-11-17, tested with synthetic messages only; PLAN §3.6). It keeps flights to or
+  from your **airport places** and those of aircraft you follow by registration, matches them to
+  live aircraft by callsign (or N-number), uses the filed route ahead of adsb.im, and adds the
+  "Filed plan" filter fields (`filed_to_place`, `filed_eta_s`, `filed_aircraft_type`, …).
+
+**How to sign up (about 15 minutes, approval is usually automatic):**
+
+1. Create an account in the **SWIFT portal**, `https://portal.swim.faa.gov` (it may send you
+   through the FAA's identity sign-up first). Accept the SCDS terms: non-operational use only.
+2. In the portal, open **SCDS** and **subscribe** to a service. Pick **TFMS → "TFMData" / "TFMS
+   Flight Data"** (the flight data output, also listed as `tfmDataService`). That's the one this app
+   parses. Not needed: TFMS flow information only, SFDPS (en-route FIXM), STDDS (surface/terminal),
+   TBFM, ITWS, AIM (NOTAMs).
+3. When the subscription is approved, its **connection details** page shows: the JMS/SMF
+   connection URL (`tcps://<host>:55443`), the **Message VPN** (e.g. `TFMS`), your **username** and
+   **password**, and the **queue name**. Use them as:
+   `SWIM_HOST=tcps://<host>:55443`, `SWIM_VPN`, `SWIM_USERNAME`, `SWIM_PASSWORD`, `SWIM_QUEUE`.
+4. Put them in `.env`, `docker compose up -d`, and check **System → Sources → faa-swim**: it
+   should say "connected" and show messages per minute within a minute. Filed flights for your
+   airports appear below the table.
+5. **Keep it connected.** SCDS disables subscriptions that stay idle (about 60 days), and the
+   queue fills up while nothing reads it. Switching the source off in the Sources report
+   disconnects; turn it back on within that time.
+
+Questions about the service: scds@faa.gov. The data is US civil IFR; military and other
+sensitive flights are generally not published, so this complements ADS-B rather than replacing it.
 
 ### FlightAware AeroAPI (Personal; free allowance)
 
@@ -217,8 +253,8 @@ stops cleanly at the cap. Responses are cached and never exported or committed.
 | VRS standing data (CC0) | airlines, operators | built |
 | adsb.im routeset | routes by callsign | built |
 | Planespotters.net | photos (web UI only, with credit) | built |
-| **FAA Releasable Aircraft Registry** | N-number owner, type, engine, year; daily bulk file, public domain | planned |
-| **hexdb.io** | aircraft info and route by callsign, as a second route source | planned |
+| **FAA Releasable Aircraft Registry** | N-number, registrant name and type (individual, corporation, government…), manufacturer/model, year, aircraft and engine type; public domain | built (weekly, conditional download; see PLAN §5.1) |
+| **hexdb.io** | registration, type and owner for aircraft the local datasets don't know (on demand, ≤1 request per 2 s, ≤2,000 a day, cached 30 days) | built (aircraft endpoint only; its routes are too old to help) |
 | **adsbdb** | routes, third fallback (cached privately, never exported) | planned |
 
 ## Order I'd build them
@@ -226,7 +262,9 @@ stops cleanly at the cap. Responses are cached and never exported or committed.
 1. **Multi-source merge** + Sources report, then FlyItalyADSB and OpenSky (you only need two free
    keys). *Built.*
 2. **Local receiver** source, as soon as your hardware runs (no keys). *Built; waiting on hardware.*
-3. **FR24** gap-fill and lookups with the budget cap.
-4. **FAA registry + hexdb.io** enrichment.
+3. **FR24** gap-fill and lookups with the budget cap. *Built; waiting on the subscription.*
+4. **FAA registry + hexdb.io** enrichment. *Built.* If the FAA refuses automated downloads
+   (it answered 503 to a plain request on 2026-11-17), download `ReleasableAircraft.zip` in a
+   browser and put it in `/data/datasets/`; the app imports it on the next check or "Update now".
 5. **FAA SWIM** schedule source and `filed_arrival` facts (after you approve the Solace library).
 6. airplanes.live, AeroAPI, ADS-B Exchange when you have access and want them.

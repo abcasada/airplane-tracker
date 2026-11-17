@@ -157,7 +157,8 @@ services:
 
 Kinds:
 
-- **area** (point/radius APIs: adsb.fi, adsb.lol, FlyItalyADSB, OpenSky; FR24 later, on demand only)
+- **area** (point/radius APIs: adsb.fi, adsb.lol, FlyItalyADSB, OpenSky)
+- **lookup** (paid, never polled: Flightradar24, §3.4)
 - **feed** (a receiver's `aircraft.json`: everything it hears, no query area, no rate limit). Read every second, dated by our clock, recorded every 5th second, and a feed batch triggers filter evaluation at most about once a second.
 - **schedule** (filed flight plans, e.g. FAA SWIM, §3.5)
 
@@ -168,9 +169,17 @@ Enrichment plug-ins (routes, flight plans) have their own interface with a per-s
 | Service | Price | What it would add |
 |---|---|---|
 | FlightAware AeroAPI Personal | First $5/month of usage free; $0.005 per `/flights/{ident}`; card required | Filed origin/destination for IFR flights, including GA/bizjets |
-| Flightradar24 API Explorer | $9/month, 30,000 credits | Live positions with origin/destination |
+| Flightradar24 API Explorer | $9/month, 30,000 credits | Live positions with origin/destination (**built 2026-11-17**, opt-in) |
 
-Not built until you ask. Any paid source must go through an app-enforced monthly budget cap.
+AeroAPI isn't built until you ask. Any paid source must go through an app-enforced monthly budget cap.
+
+**Flightradar24 (built 2026-11-17, mock-tested only; opt-in with `FR24_API_KEY`).** A lookup-only source, never polled:
+
+- `sources/fr24.py` fetches `GET /api/live/flight-positions/full` by `registrations` and/or `callsigns` (≤15 each; FR24 has no hex filter), with `Accept-Version: v1` and a bearer key, `limit` = number of identifiers. It normalizes to `Observation` (source `fr24`); FR24's `ESTIMATED` positions are shown on demand but never fed into tracks. Origin/destination, flight number and ETA are shown on the aircraft page only (not yet filter fields).
+- `ingest/fr24.py` (`FR24Service`) gates every request: on/off switch (Sources report) → per-identifier cache (`cache` table, namespace `fr24`: 60 s found, 4 min missing, rows dropped after a day) → **monthly credit cap** (`ingest/credits.py`: credits per UTC calendar month, persisted in setting `fr24_credits`, which isn't backed up; default cap `FR24_MONTHLY_CREDITS=20000` of Explorer's 30,000; a request is refused unsent if its worst case would cross the cap; HTTP 402 stops FR24 until next month) → breaker → token bucket at half of Explorer's ~10 req/min (one request per 12 s).
+- Credits are estimated, since FR24 doesn't publish a per-endpoint price in its API spec: `FR24_CREDITS_PER_FLIGHT` (default 8, above the ~6 a third party reported) per flight returned, at least one per request. The Sources report's "Check FR24's own count" calls `/api/usage` (30 days) to calibrate it.
+- **When FR24 is called:** (a) **on demand**: "Look up on Flightradar24" on the aircraft page, also for an aircraft out of range (hex → registration from the database, or the current callsign); (b) **gap-fill** (`FR24_GAP_FILL`, default on): every 30 s, one request for filter candidates that no free source has heard for 90 s: followed aircraft (`watch.py`) and aircraft that matched a filter in the last 30 min. Each is asked again every 5 min while FR24 finds it, backing off to 6 h while it doesn't, and forgotten when a free source hears it. Gap-fill also stays under an even-pace line (the cap spread over the month, plus one day's share), so it can't use up the month before your own lookups.
+- FR24 data is never recorded (so never in replay fixtures), exported or committed. The Sources report shows credits this month vs the cap, today's credits and lookups by kind; positions FR24 adds aren't counted as "seen" there.
 
 ### 3.5 What JetTip does, and whether to copy it
 
@@ -185,6 +194,17 @@ Not built until you ask. Any paid source must go through an app-enforced monthly
 **Fit for this app:** a good **optional "schedule" source** for *civil* aircraft ("a 747 has filed a flight plan into KSLN for 14:20 tomorrow"), feeding the same filters with an `arrival_filed` fact. It won't help with military traffic. It adds a Solace client dependency and a continuous national stream to filter locally: more CPU/RAM than ADS-B polling, though still modest.
 
 **Recommendation:** Phase 5, only if you want "scheduled visitor" alerts. ADS-B stays the core because it sees military, unfiled and VFR traffic.
+
+### 3.6 FAA SWIM schedule source (built 2026-11-17, mock-tested; waiting on SCDS registration)
+
+- **Feed:** SCDS subscription to **TFMS Flight Data** (`tfmDataService`, the ASDI successor). It's one national stream of `fltdMessage`s (flight plan, modify, times, track, departure, arrival, cancellation) with the flight's identity as attributes (`acid`, `depArpt`, `arrArpt`, `flightRef`, `sourceTimeStamp`). We use plans, times, aircraft type, status and departure/arrival reports, not TFMS positions (ADS-B has better ones). Airports come as ICAO (KDEN) or FAA (DEN) codes; they're resolved through OurAirports.
+- **Opt-in:** on only when `SWIM_HOST`, `SWIM_VPN`, `SWIM_USERNAME`, `SWIM_PASSWORD` and `SWIM_QUEUE` are set. The Solace client (`solace-pubsubplus` 1.11.0, Apache-2.0, ~5 MB wheel, ~15 MB installed, ~7 MB RSS once imported, measured in the image) is an optional `swim` extra that the Dockerfile installs (build arg `UV_EXTRAS=` leaves it out); it is imported lazily, so the app runs without it and tests never load it.
+- **Threads → asyncio:** `sources/swim.py` connects (TLS with the system CA store, compressed transport, durable non-exclusive queue, auto-ack) and parses. Solace calls `ingest/swim.py` on its own thread for each message: inflate (bounded to 2 MB), then a byte regex on the message headers keeps only documents that mention one of your **airport places** or the **registrations of followed aircraft** (GA plans file under the N-number). Kept documents go into a bounded queue (500 documents / 8 MB, oldest dropped); an asyncio task drains it, parses in a worker thread and merges into the store. Reconnects back off exponentially from 10 s to 10 min; the System → Sources report shows state, messages/min, kept/irrelevant/dropped counts and the last error, and the per-source switch turns it off (disconnects).
+- **Store** (`ingest/swimstore.py`): one record per TFMS flight reference, merged field by field (late messages only fill gaps). At most 20,000 flights in memory, 3 days in SQLite (`swim_flights`, migration 0009), never exported.
+- **Matching:** a live aircraft matches a plan by callsign, or by registration for GA, within the plan's window (2 h before departure until 30 min after arrival); a plan in progress wins over the next leg. TFMS carries no ICAO hex.
+- **Routes:** a matched plan becomes the aircraft's route (source `faa-swim`) before adsb.im, so `route_origin`, `route_destination`, `destined_for` and `departed_from` use it, with the usual plausibility check; adsb.im isn't asked for those callsigns.
+- **Filter fields** (group "Filed plan"): `has_filed_plan`, `filed_origin`, `filed_destination`, `filed_aircraft_type`, `filed_status`, `filed_departure_in_s`, `filed_arrival_in_s`, and per airport place `filed_to_place`, `filed_from_place`, `filed_eta_s`. Unknown (not false) when SWIM isn't configured. The backtest uses the stored plans, so it only knows the last 3 days.
+- **Not yet:** alerts for filed flights that aren't in ADS-B range yet ("a C-17 filed into your airport for 14:20"). Filters evaluate tracked aircraft; the System page lists upcoming filed flights for your airports meanwhile. Areas aren't used for filtering: TFMS routes are fix names, not cheaply placed on a map.
 
 ---
 
@@ -217,10 +237,14 @@ Default visibility settings for a viewpoint (approved as a starting point, all e
 |---|---|---|---|
 | Type, registration, description, year, owner, military/LADD/PIA flags | **tar1090-db** `aircraft.csv.gz` (~622k rows) + `ranges.json` (32 military address blocks) | No license file; personal use | Weekly refresh. Also yields `type_stats` (share of military airframes per type). |
 | **"Interesting" aircraft list** with categories and tags | **plane-alert-db** (`sdr-enthusiasts/plane-alert-db`) — `plane-alert-db.csv`, ~17.3k aircraft | **ODbL 1.0 / DbCL 1.0** | Columns: ICAO, registration, operator, type, ICAO type, **CMPG** (Civ/Mil/Pol/Gov), **Tag 1–3**, **Category** (54, e.g. *USAF*, *Zoomies* (fast jets), *Oxcart* (intel), *Gunship*, *Special Forces*, *UAV*, *Toy Soldiers* (armies), *Dictator Alert*…), link. Weekly refresh. Optional `plane_images.csv` (~12k photo links) for the UI. |
+| US civil register: N-number, registrant name and **registrant type** (individual, corporation, government…), manufacturer/model, year, aircraft and engine type | **FAA Releasable Aircraft Database** `ReleasableAircraft.zip` (~60 MB; MASTER.txt ~200 MB uncompressed, ~300k aircraft) | US government work, public domain | Weekly check with `If-None-Match`/`If-Modified-Since` (the FAA rebuilds it daily). MASTER and ACFTREF are streamed out of the zip and inserted in batches of 5,000, so the import adds ~5 MB peak RSS (measured on a full-size synthetic file) and ~30 MB to the database; street addresses are never imported. Members over 1 GB uncompressed are refused. If the FAA refuses the download, a copy you put in `/data/datasets/ReleasableAircraft.zip` is imported instead. |
+| Last resort for registration, type, owner | **hexdb.io** `GET /api/v2/aircraft/{hex}` | No published terms or limits; credited on the System page | Only for tracked aircraft whose registration, type or operator is still unknown after the live data, tar1090-db and the FAA registry; filter matches go first. One request at a time, ≥2 s apart, ≤2,000 a day, never a crawl; circuit breaker with hard backoff (30 s → 5 min, or `Retry-After`) on any 4xx/5xx except its documented "aircraft_not_found" 404. Cached in `cache` (hits 30 days, misses 3 days). `HEXDB_ENABLED=false` turns it off. Its route endpoint isn't used: its routes are old (2014 timestamps) and adsb.im already covers routes with a plausibility flag. |
 | Operator from callsign | VRS standing-data airlines | CC0 | `ownOp` is the registered *owner* (often a bank trustee) |
 | Routes by callsign | **adsb.im** `POST /api/0/routeset` (batch, returns multi-leg routes + **`plausible`** flag; tested OK). Further sources (standing-data, adsbdb) can plug into the same `RouteService` if adsb.im ever stops answering. | adsbdb route data not redistributable | Cached 24 h (misses 6 h). Batched, ≤1 request per 30 s. adsb.lol's routeset returned empty. Military and GA callsigns come back "unknown", as expected. Our own plausibility check allows 30 nm off-route near airports, growing to 150 nm mid-route. |
 | Airports, runways, elevations | OurAirports | Public domain | Airport places, arrival score |
 | Viewpoint elevation | USGS Elevation Point Query Service (once per viewpoint) | Public | Manual override |
+
+**Precedence** for registration, type, type description, owner and year (`enrich/enricher.py`, `tracks/store.py`): the live source's own database fields (adsb.fi/adsb.lol send `r`/`t`/`desc`/`ownOp`/`year`) → tar1090-db → FAA registry (only for hexes in the US civil block `a00000–adf7c7`) → cached hexdb.io answer. Each fallback only fills fields that are still empty, and remembers which ones it filled (`AircraftInfo.provenance`). FAA-only facts (registrant type, aircraft type, engine type) are always taken from the registry. Filters that follow a registration also resolve N-numbers through the FAA registry.
 
 ### 5.2 Military classifier (FR24-style, explainable)
 
@@ -240,7 +264,7 @@ FR24's military filter isn't publicly documented; it appears to use their own ai
 | **Your overrides** | Final | Mark any hex or registration military or not |
 
 - Score = 1 − ∏(1 − wᵢ). Weights and lists are editable in the dashboard.
-- **Government** and **police** are separate classes (plane-alert-db CMPG Gov/Pol, owner text such as FAA, CBP, "STATE OF …"). FR24 lumps these together with military; here they're separate fields.
+- **Government** and **police** are separate classes (plane-alert-db CMPG Gov/Pol, owner text such as FAA, CBP, "STATE OF …", and FAA registrant types listed in the classifier setting `government_registrant_types`, default `["government"]`, which the Military page shows as a checkbox). The FAA registrant type is not a military signal: military aircraft aren't on the civil register, while "Government" covers federal, state and local owners, police included. FR24 lumps these together with military; here they're separate fields.
 - Validation: compare against the `dbFlags`-only baseline on recordings. The dashboard lists "possible military" (score 0.3–0.6) for review.
 - **Suggestions from your overrides** (*done*, `classify/suggest.py`). Marking an aircraft stores a snapshot of what the classifier saw (callsign, registration, owner, flags), because callsigns are transient. The review page re-runs the one classifier over your marks (live track first, then the snapshot, then the datasets) and suggests edits you accept or dismiss: add a callsign prefix (≥3 aircraft marked military with the same letters+number callsign and none marked not military), remove a listed prefix or owner word (≥3 marked not military, none military), add an owner text as an owner word (≥3 marked military, no word matches it yet), or move a signal weight one slider step at a time (0.05) to the smallest change that brings ≥3 of your marks in line without flipping any other mark. Each comes with a reason, the aircraft behind it, and how many tracked aircraft it would flip right now. Nothing changes until you accept; accepting edits the same classifier settings as the sliders and lists, so live alerting, the preview and the backtest follow. Dismissed suggestions stay dismissed (setting `military_suggestions`, in backups) until you restore them. Two settings on the page: the minimum number of agreeing marks (default 3, 2–20; "≥3" above means this number), and an opt-in to bring a dismissed suggestion back once twice as many aircraft support it as when you dismissed it.
 
@@ -506,8 +530,8 @@ Preview and backtest therefore always agree with what would actually notify.
 
 | Group | Fields |
 |---|---|
-| Identity | hex, registration, callsign, flight number, airline (from callsign), owner/operator |
-| Aircraft | ICAO type, type description, manufacturer, emitter category, wake class, engine type/count (if available), year built |
+| Identity | hex, registration, callsign, flight number, airline (from callsign), owner/operator, FAA registrant type |
+| Aircraft | ICAO type, type description, manufacturer, emitter category, wake class, engine type/count (if available), year built, FAA aircraft type, FAA engine type |
 | Classification | military score + each military signal, government, police, plane-alert CMPG / category / tags, LADD, PIA |
 | State | altitude (baro/geo, MSL/AGL), ground speed, vertical rate, track, squawk, emergency, on-ground, position source (ADS-B/MLAT/TIS-B), data age |
 | Relative to place | distance, bearing (or compass sector), elevation angle, slant range, `visible_now`, `inside_now`, `seconds_inside`, `arrival_score` |
@@ -544,10 +568,10 @@ Notifications: a take-off in the same cycle as a new match is announced in that 
 
 Generic filter fields: `took_off_recently`, `landed_recently` (last 10 min), `takeoff_airport`, `landing_airport`. For example, "anything that took off from KSLN in the last 10 minutes" works without a watchlist.
 
-**FR24-style "simple mode" (built 2026-11-10):** the builder has a **Simple | Advanced** toggle. Simple is a flat panel of common rows: registration, callsign, type, airline code, operator/owner, emitter category, military (any/yes/no), altitude and ground-speed ranges, claimed origin and destination, and distance from a place. Empty rows are ignored; an aircraft must match every filled row. It is only a view over the same expression tree (`frontend/src/lib/simple.ts`, a pure tree⇄rows converter with vitest tests), so preview, funnel (counts per row), "why not?", backtest and alerting are unchanged.
-- Rows write: exact values → `in`, or `glob` when a value has `*`, `?` or `[`; operator → `contains`; category → `in`; military → `is_true`/`is_false`; ranges → `ge`/`le`, or `between` when both ends are set (`gt`/`lt` from existing trees are kept).
+**FR24-style "simple mode" (built 2026-11-10):** the builder has a **Simple | Advanced** toggle. Simple is a flat panel of common rows in two sections. **At or headed to your places** comes first, because what's at or headed to an airport or range is the point of the app: arriving soon (`predicted_arrival`, airports), inside or entering soon (`predicted_entry`, areas), distance from a place, and height above a place (on the ground counts as 0 ft, so distance + height covers "at the airport"). **Which aircraft**: registration, callsign, type, airline code, operator/owner, emitter category, military (any/yes/no), altitude and ground-speed ranges, claimed origin and destination. There is deliberately no "visible from place" row (Advanced has it). Empty rows are ignored; an aircraft must match every filled row. It is only a view over the same expression tree (`frontend/src/lib/simple.ts`, a pure tree⇄rows converter with vitest tests), so preview, funnel (counts per row), "why not?", backtest and alerting are unchanged.
+- Rows write: exact values → `in`, or `glob` when a value has `*`, `?` or `[`; operator → `contains`; category → `in`; military, arriving soon and inside/entering → `is_true`/`is_false`; ranges → `ge`/`le`, or `between` when both ends are set (`gt`/`lt` from existing trees are kept).
 - **Simple shape:** an enabled "all of" root holding only enabled conditions on those fields, at most one per field, with those operators. Anything else (nested groups, any/none, other fields, other operators, switched-off conditions) stays in Advanced, which lists why. Simple → Advanced always works. Round trips are lossless (conditions keep their ids and order); conditions with no values yet are dropped on the first simple edit.
-- Field labels, units, help, enums, places and autocomplete come from the catalog (route origin/destination now autocomplete airports). The chosen view is remembered per device (localStorage); with no choice yet, Simple is used whenever the filter fits it.
+- Field labels, units, help, enums, places and autocomplete come from the catalog (route origin/destination now autocomplete airports). Place rows default to your first enabled airport or area the field accepts (viewpoint-capable fields fall back to "any active viewpoint" only when you have none); picking a place on one row carries it to the empty place rows that accept it. A condition's own place always round-trips, "any active viewpoint" included. The chosen view is remembered per device (localStorage); with no choice yet, Simple is used whenever the filter fits it.
 
 ### 10.2 Builder and live preview
 - **Visual builder:** add/remove/reorder conditions, nest groups, toggle a condition off without deleting it.
@@ -652,7 +676,7 @@ Each phase ends usable, with tests passing and the container working. **The filt
 
 ### Phase 5 — Sources, ntfy, extras (re-planned v4, see SOURCES.md)
 - ntfy notifier (§9.1) and the military review page's list suggestions from your overrides. *Both done* (suggestions: §5.2).
-- Multi-source merge + Sources report (*done*); FlyItalyADSB and OpenSky (*done*); local receiver (*done*, `RECEIVER_URL`, optional `RECEIVER_UAT_URL`); FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
+- Multi-source merge + Sources report (*done*); FlyItalyADSB and OpenSky (*done*); local receiver (*done*, `RECEIVER_URL`, optional `RECEIVER_UAT_URL`); FR24 on demand and gap-fill with a monthly credit cap (*built 2026-11-17*, waiting on the subscription); FAA registry and hexdb.io enrichment (*done*, §5.1); FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
 - Dropped: Web Push backup channel (ntfy instead) and GHCR image releases (your decision).
 - Backup/restore of places and filters. *Backup/restore done:* Settings → Backup downloads one JSON file (places, filters, mutes, settings, military overrides; never credentials). Restore merges, remaps place ids inside filters and mutes, skips places and filters that already exist, and keeps this install's home.
 

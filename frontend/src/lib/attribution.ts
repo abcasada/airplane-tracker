@@ -7,6 +7,7 @@ export const SOURCE_CREDITS: Record<string, { label: string; url: string | null;
   opensky: { label: 'The OpenSky Network', url: 'https://opensky-network.org', note: 'non-commercial' },
   receiver: { label: 'your receiver', url: null, note: '1090 MHz' },
   'receiver-uat': { label: 'your receiver', url: null, note: '978 MHz UAT' },
+  fr24: { label: 'Flightradar24', url: 'https://www.flightradar24.com', note: 'on demand' },
 }
 
 export const DEFAULT_SOURCES = ['adsb.fi', 'adsb.lol']

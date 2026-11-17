@@ -10,6 +10,11 @@ included in this repository.
   under CC BY-SA 4.0.
 - The OpenSky Network (https://opensky-network.org), only when the user sets API client
   credentials. Used under OpenSky's terms of use (non-commercial).
+- Flightradar24 API (https://fr24api.flightradar24.com), only when the user sets their own API
+  key (paid subscription). Data provided by Flightradar24 (https://www.flightradar24.com), used
+  under its API terms for the subscriber's own use; never stored beyond a short cache, exported
+  or redistributed. Request headers and field names follow Flightradar24's official Python SDK
+  (https://github.com/Flightradar24/fr24api-sdk-python, MIT); no code is copied from it.
 - tar1090-db by wiedehopf (https://github.com/wiedehopf/tar1090-db), derived from the
   Mictronics readsb database. Used for aircraft type/registration and military address ranges.
 - plane-alert-db by SDR-Enthusiasts, Ramon F. Kolb (kx1t) and contributors
@@ -20,8 +25,15 @@ included in this repository.
 - Planespotters.net photo API (https://www.planespotters.net). Photos are shown only in the web UI,
   with the photographer credit and a link, as its terms require.
 - OurAirports (https://ourairports.com/data/). Public domain.
+- FAA Releasable Aircraft Database (https://registry.faa.gov/). US government work, public
+  domain. Street addresses are not imported.
+- hexdb.io (https://hexdb.io), per-aircraft lookups for aircraft the other datasets don't know.
+  hexdb.io credits its data to PlaneBase/PlanePlotter, Jim Mason, Steve Hibberd and others.
 - FAA Aeronautical Data Delivery Service (ADDS), special use airspace
   (https://adds-faa.opendata.arcgis.com/). US government work, public domain. Queried only when
   the user searches for airspace, and cached.
+- FAA SWIM Cloud Distribution Service, TFMS flight data (https://www.faa.gov/air_traffic/technology/swim),
+  only when the user sets SWIM credentials. Non-operational use under the FAA's SCDS terms. Received
+  with the Solace PubSub+ Python API (solace-pubsubplus, Apache License 2.0), installed in the image.
 - Map tiles (c) OpenStreetMap contributors (https://www.openstreetmap.org/copyright).
 - USGS Elevation Point Query Service (https://epqs.nationalmap.gov). Public domain.

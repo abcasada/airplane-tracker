@@ -141,6 +141,7 @@ def from_snapshot(snap: dict[str, Any], type_stats: tuple[int, float] | None) ->
         type_military_share=type_stats[1] if type_stats else None,
         callsign_is_airline=bool(snap.get("callsign_is_airline")),
         override=None,
+        registrant_type=text("registrant_type"),
     )
 
 

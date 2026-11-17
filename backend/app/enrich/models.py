@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 
+from .faa import FaaRecord
+
 
 @dataclass(frozen=True, slots=True)
 class PlaneAlertEntry:
@@ -42,4 +44,16 @@ class AircraftInfo:
     type_military_share: float | None = None
     type_airframes: int = 0
     plane_alert: PlaneAlertEntry | None = None
+    faa: FaaRecord | None = None
+    # Which fields were filled from a fallback ("faa", "hexdb") rather than tar1090-db.
+    provenance: dict[str, str] = field(default_factory=dict)
+    # A hexdb.io answer (or "not found") is cached and still fresh; no need to ask again.
+    hexdb_checked: bool = False
     extra: dict[str, str] = field(default_factory=dict)
+
+    def fill(self, source: str, **values: str | None) -> None:
+        """Set fields that are still empty, remembering where each came from."""
+        for key, value in values.items():
+            if value and not getattr(self, key):
+                setattr(self, key, value)
+                self.provenance[key] = source
