@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tfmDataService xmlns="urn:us:gov:dot:faa:atm:tfm:tfmdataservice" xmlns:ns2="urn:us:gov:dot:faa:atm:tfm:flightdata" xmlns:ns3="urn:us:gov:dot:faa:atm:tfm:flightdatacommonmessages" xmlns:ns4="urn:us:gov:dot:faa:atm:tfm:tfmdatacoreelements">
+  <fltdOutput>
+    <ns2:fltdMessage acid="TST101" airline="TST" arrArpt="ICT" depArpt="DEN" flightRef="100001" msgType="FlightModify" sourceFacility="TFMS" sourceTimeStamp="2027-01-15T13:30:00.250Z">
+      <ns2:ncsmFlightModify>
+        <ns3:qualifiedAircraftId aircraftCategory="JET" userCategory="COMMERCIAL">
+          <ns4:aircraftId>TST101</ns4:aircraftId>
+          <ns4:igtd>2027-01-15T14:00:00Z</ns4:igtd>
+          <ns4:departurePoint><ns4:airport>DEN</ns4:airport></ns4:departurePoint>
+          <ns4:arrivalPoint><ns4:airport>ICT</ns4:airport></ns4:arrivalPoint>
+        </ns3:qualifiedAircraftId>
+        <ns3:airlineData>
+          <ns3:flightStatusAndSpec>
+            <ns3:flightStatus>SCHEDULED</ns3:flightStatus>
+            <ns3:aircraftModel>B763</ns3:aircraftModel>
+            <ns3:aircraftSpecification aircraftEngineClass="JET" numberOfAircraft="1">B763</ns3:aircraftSpecification>
+          </ns3:flightStatusAndSpec>
+          <ns3:etd etdType="ESTIMATED" timeValue="2027-01-15T14:20:00Z"/>
+          <ns3:eta etaType="ESTIMATED" timeValue="2027-01-15T15:35:00Z"/>
+        </ns3:airlineData>
+      </ns2:ncsmFlightModify>
+    </ns2:fltdMessage>
+  </fltdOutput>
+</tfmDataService>

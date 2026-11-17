@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ns5:tfmDataService xmlns:ns5="urn:us:gov:dot:faa:atm:tfm:tfmdataservice" xmlns:fdm="urn:us:gov:dot:faa:atm:tfm:flightdata" xmlns:nxcm="urn:us:gov:dot:faa:atm:tfm:flightdatacommonmessages" xmlns:nxce="urn:us:gov:dot:faa:atm:tfm:tfmdatacoreelements">
+  <fltdOutput>
+    <fdm:fltdMessage acid="TST101" arrArpt="KICT" depArpt="KDEN" flightRef="100001" msgType="departureInformation" sourceTimeStamp="2027-01-15T14:22:00Z">
+      <fdm:departureInformation>
+        <nxcm:qualifiedAircraftId aircraftCategory="JET" userCategory="COMMERCIAL">
+          <nxce:aircraftId>TST101</nxce:aircraftId>
+          <nxce:departurePoint><nxce:airport>KDEN</nxce:airport></nxce:departurePoint>
+          <nxce:arrivalPoint><nxce:airport>KICT</nxce:airport></nxce:arrivalPoint>
+        </nxcm:qualifiedAircraftId>
+        <nxcm:flightAircraftSpecs equipmentQualifier="L">B763</nxcm:flightAircraftSpecs>
+        <nxcm:timeOfDeparture estimated="false">2027-01-15T14:21:00Z</nxcm:timeOfDeparture>
+        <nxcm:ncsmFlightTimeData>
+          <nxcm:etd etdType="ACTUAL" timeValue="2027-01-15T14:21:00Z"/>
+          <nxcm:eta etaType="ESTIMATED" timeValue="2027-01-15T15:31:00Z"/>
+        </nxcm:ncsmFlightTimeData>
+      </fdm:departureInformation>
+    </fdm:fltdMessage>
+    <fdm:fltdMessage acid="N123TS" arrArpt="KICT" depArpt="KAAO" flightRef="100003" msgType="flightPlanCancellation" sourceTimeStamp="2027-01-15T14:23:00Z">
+      <fdm:flightPlanCancellation>
+        <nxcm:qualifiedAircraftId aircraftCategory="PROP" userCategory="GENERAL_AVIATION">
+          <nxce:aircraftId>N123TS</nxce:aircraftId>
+          <nxce:departurePoint><nxce:airport>KAAO</nxce:airport></nxce:departurePoint>
+          <nxce:arrivalPoint><nxce:airport>KICT</nxce:airport></nxce:arrivalPoint>
+        </nxcm:qualifiedAircraftId>
+      </fdm:flightPlanCancellation>
+    </fdm:fltdMessage>
+    <fdm:fltdMessage acid="TST101" arrArpt="KICT" depArpt="KDEN" flightRef="100001" msgType="arrivalInformation" sourceTimeStamp="2027-01-15T15:33:00Z">
+      <fdm:arrivalInformation>
+        <nxcm:qualifiedAircraftId aircraftCategory="JET" userCategory="COMMERCIAL">
+          <nxce:aircraftId>TST101</nxce:aircraftId>
+          <nxce:departurePoint><nxce:airport>KDEN</nxce:airport></nxce:departurePoint>
+          <nxce:arrivalPoint><nxce:airport>KICT</nxce:airport></nxce:arrivalPoint>
+        </nxcm:qualifiedAircraftId>
+        <nxcm:timeOfArrival estimated="false">2027-01-15T15:32:00Z</nxcm:timeOfArrival>
+      </fdm:arrivalInformation>
+    </fdm:fltdMessage>
+  </fltdOutput>
+</ns5:tfmDataService>
