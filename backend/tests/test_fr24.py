@@ -100,6 +100,11 @@ def test_credit_meter_cap_pace_and_month_rollover() -> None:
     assert "cap" in (m.refusal(early, 20, paced=False) or "")
     m.mark_exhausted(early)
     assert "used up" in (m.refusal(early, 1, paced=False) or "")
+    held = CreditMeter(cap=100)
+    held.reserve(early, 80)  # a request in flight holds its worst case…
+    assert held.refusal(early, 40, paced=False) is not None  # …so a concurrent one can't overshoot
+    held.settle(early, 80, 16)
+    assert held.used == 16 and held.requests == 1
     restored = CreditMeter(cap=3000)
     restored.load(m.to_json())
     assert restored.used == 2990 and restored.exhausted

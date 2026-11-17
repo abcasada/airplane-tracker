@@ -210,14 +210,17 @@ class FR24Service:
             regs = [keys[k] for k in sent if k.startswith("reg:")]
             css = [keys[k] for k in sent if k.startswith("cs:")]
             # `limit` = identifiers sent, so this is the most a request can cost.
-            self._gate(now, self.credits_per_flight * len(sent), purpose)
+            worst = self.credits_per_flight * len(sent)
+            self._gate(now, worst, purpose)
             self.bucket.take(now)
+            self.meter.reserve(now, worst)
             started = time.perf_counter()
             try:
                 found = await self.source.fetch_flights(regs, css)
             except SourceError as e:
                 self.errors += 1
                 self._count(now, 0.0)
+                self.meter.settle(self.clock.now(), worst, 0.0)
                 if e.status == 402:  # Payment Required: the plan's credits are gone
                     self.meter.mark_exhausted(now)
                 self.breaker.failure(now, str(e), e.is_client_error, e.retry_after_s)
@@ -228,7 +231,7 @@ class FR24Service:
             self.last_latency_ms = (time.perf_counter() - started) * 1000
             self.breaker.success(now)
             credits = self.credits_per_flight * max(1, len(found))
-            self.meter.spend(now, credits)
+            self.meter.settle(now, worst, credits)
             self._count(now, credits)
             self.counts[purpose] += 1
             self.counts["found"] += len(found)

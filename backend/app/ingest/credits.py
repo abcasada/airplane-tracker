@@ -63,6 +63,20 @@ class CreditMeter:
         self.requests += 1
         self.dirty = True
 
+    def reserve(self, now: float, cost: float) -> None:
+        """Hold the worst case while a request is in flight, so concurrent ones can't overshoot;
+        `settle` replaces it with the actual cost (0 if the request failed)."""
+        self._roll(now)
+        self.used += cost
+
+    def settle(self, now: float, reserved: float, actual: float) -> None:
+        month = self.month
+        self._roll(now)
+        if self.month == month:
+            self.used = max(0.0, self.used - reserved)
+        if actual:
+            self.spend(now, actual)
+
     def mark_exhausted(self, now: float) -> None:
         self._roll(now)
         self.exhausted = True
