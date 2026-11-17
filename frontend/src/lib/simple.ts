@@ -1,6 +1,6 @@
 // Simple mode: a flat panel of common filter rows over the same expression tree.
 // The tree stays the only source of truth; this module converts between it and the rows.
-import type { Condition, Group } from './types'
+import type { Condition, FieldDef, Group, Place } from './types'
 
 /**
  * match: exact values ("is any of"), or patterns ("matches pattern") when a value has a wildcard.
@@ -9,28 +9,41 @@ import type { Condition, Group } from './types'
  */
 export type SimpleKind = 'match' | 'contains' | 'choice' | 'flag' | 'range'
 
+/** where: relation to one of your places (airport, range, …). what: the aircraft itself. */
+export type SimpleSection = 'where' | 'what'
+
 export interface SimpleField {
   field: string
   kind: SimpleKind
+  section: SimpleSection
 }
 
 // Labels, units, help, enums, autocomplete and place support come from the field catalog.
+// The place rows come first: what's at or headed to an airport or range is the point of the app.
 export const SIMPLE_FIELDS: readonly SimpleField[] = [
-  { field: 'registration', kind: 'match' },
-  { field: 'callsign', kind: 'match' },
-  { field: 'type_code', kind: 'match' },
-  { field: 'airline_code', kind: 'match' },
-  { field: 'operator', kind: 'contains' },
-  { field: 'category', kind: 'choice' },
-  { field: 'military', kind: 'flag' },
-  { field: 'altitude_ft', kind: 'range' },
-  { field: 'ground_speed_kt', kind: 'range' },
-  { field: 'route_origin', kind: 'match' },
-  { field: 'route_destination', kind: 'match' },
-  { field: 'distance_nm', kind: 'range' },
+  { field: 'predicted_arrival', kind: 'flag', section: 'where' },
+  { field: 'predicted_entry', kind: 'flag', section: 'where' },
+  { field: 'distance_nm', kind: 'range', section: 'where' },
+  { field: 'height_above_place_ft', kind: 'range', section: 'where' },
+  { field: 'registration', kind: 'match', section: 'what' },
+  { field: 'callsign', kind: 'match', section: 'what' },
+  { field: 'type_code', kind: 'match', section: 'what' },
+  { field: 'airline_code', kind: 'match', section: 'what' },
+  { field: 'operator', kind: 'contains', section: 'what' },
+  { field: 'category', kind: 'choice', section: 'what' },
+  { field: 'military', kind: 'flag', section: 'what' },
+  { field: 'altitude_ft', kind: 'range', section: 'what' },
+  { field: 'ground_speed_kt', kind: 'range', section: 'what' },
+  { field: 'route_origin', kind: 'match', section: 'what' },
+  { field: 'route_destination', kind: 'match', section: 'what' },
 ]
 
 const KIND: Record<string, SimpleKind> = Object.fromEntries(SIMPLE_FIELDS.map((s) => [s.field, s.kind]))
+const SECTION: Record<string, SimpleSection> = Object.fromEntries(SIMPLE_FIELDS.map((s) => [s.field, s.section]))
+
+export function sectionOf(field: string): SimpleSection | null {
+  return SECTION[field] ?? null
+}
 
 export interface SimpleRow {
   field: string
@@ -54,6 +67,44 @@ export interface SimpleOptions {
   placeFor?: (field: string) => number | null
   fieldLabel?: (field: string) => string
   opLabel?: (field: string, op: string) => string
+}
+
+/** "Any active viewpoint" in a condition's place (the engine's ANY_VIEWPOINT). */
+export const ANY_VIEWPOINT = 0
+
+/**
+ * Default place for a new place row: your first enabled airport or area that the field accepts,
+ * since those are what simple mode is for. Without one, viewpoint fields fall back to "any
+ * active viewpoint", then home, then whatever place the field accepts.
+ */
+export function defaultPlace(
+  fd: Pick<FieldDef, 'place' | 'place_roles' | 'any_viewpoint'>,
+  places: readonly Pick<Place, 'id' | 'role' | 'enabled' | 'is_home'>[],
+): number | null {
+  if (!fd.place) return null
+  const fits = places.filter((p) => !fd.place_roles.length || fd.place_roles.includes(p.role))
+  const enabled = fits.filter((p) => p.enabled)
+  const target = enabled.find((p) => p.role === 'airport' || p.role === 'area')
+  if (target) return target.id
+  if (fd.any_viewpoint) return ANY_VIEWPOINT
+  return (enabled.find((p) => p.is_home) ?? enabled[0] ?? fits[0])?.id ?? null
+}
+
+/**
+ * After a place is picked on one row, the empty place rows that accept it switch to it too,
+ * so "arriving at KSLN" and "within 5 nm of" don't each need the place chosen again.
+ * Filled rows keep their place; empty rows aren't in the tree, so the tree doesn't change.
+ */
+export function followPlace(
+  form: SimpleForm,
+  from: SimpleRow,
+  accepts: (field: string, place: number) => boolean,
+): void {
+  const place = from.place
+  if (place === null) return
+  for (const r of form) {
+    if (r !== from && rowIsEmpty(r) && accepts(r.field, place)) r.place = place
+  }
 }
 
 const WILDCARD = /[*?[]/
