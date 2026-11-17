@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator
+from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -71,6 +72,9 @@ async def aircraft_detail(hex_: str, ctx: Ctx, _: CurrentUser) -> dict[str, Any]
             if pa
             else None
         ),
+        "faa": asdict(info.faa) if info and info.faa else None,
+        # Fields filled from the FAA registry or hexdb.io because nothing earlier had them.
+        "filled_from": dict(info.provenance) if info else {},
         "history": [[p.t, p.lat, p.lon, p.alt_ft] for p in track.history],
         "first_seen": track.first_seen,
     }

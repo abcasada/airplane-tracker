@@ -20,6 +20,10 @@ included in this repository.
 - Planespotters.net photo API (https://www.planespotters.net). Photos are shown only in the web UI,
   with the photographer credit and a link, as its terms require.
 - OurAirports (https://ourairports.com/data/). Public domain.
+- FAA Releasable Aircraft Database (https://registry.faa.gov/). US government work, public
+  domain. Street addresses are not imported.
+- hexdb.io (https://hexdb.io), per-aircraft lookups for aircraft the other datasets don't know.
+  hexdb.io credits its data to PlaneBase/PlanePlotter, Jim Mason, Steve Hibberd and others.
 - FAA Aeronautical Data Delivery Service (ADDS), special use airspace
   (https://adds-faa.opendata.arcgis.com/). US government work, public domain. Queried only when
   the user searches for airspace, and cached.

@@ -24,8 +24,37 @@
       link: string | null
       images: string[]
     } | null
+    faa: {
+      n_number: string
+      registrant_type: string | null
+      name: string | null
+      year: string | null
+      status: string | null
+      mfr: string | null
+      model: string | null
+      seats: number | null
+      engines: number | null
+    } | null
+    filled_from: Record<string, string>
     first_seen: number
     history: [number, number, number, number | null][]
+  }
+
+  const SOURCE_LABELS: Record<string, string> = { faa: 'the FAA registry', hexdb: 'hexdb.io' }
+  const FIELD_LABELS: Record<string, string> = {
+    registration: 'registration', type_code: 'type', type_desc: 'type description',
+    owner_op: 'owner', year: 'year',
+  }
+  const REGISTRANT_LABELS: Record<string, string> = {
+    individual: 'individual', partnership: 'partnership', corporation: 'corporation',
+    co_owned: 'co-owned', government: 'government', llc: 'LLC',
+    non_citizen_corporation: 'non-citizen corporation', non_citizen_co_owned: 'non-citizen co-owned',
+  }
+
+  function groupBySource(filled: Record<string, string>): Record<string, string[]> {
+    const out: Record<string, string[]> = {}
+    for (const [field, src] of Object.entries(filled)) (out[src] ??= []).push(FIELD_LABELS[field] ?? field)
+    return out
   }
 
   let d = $state<Detail | null>(null)
@@ -103,6 +132,21 @@
           <strong>plane-alert-db:</strong> {d.plane_alert.category} · {d.plane_alert.operator}
           {#if d.plane_alert.tags.length}· {d.plane_alert.tags.join(', ')}{/if}
           {#if d.plane_alert.link}· <a href={d.plane_alert.link} target="_blank" rel="noopener noreferrer">more</a>{/if}
+        </p>
+      {/if}
+      {#if d.faa}
+        <p class="small">
+          <strong>FAA registry:</strong> {d.faa.n_number}
+          {#if d.faa.name}· {d.faa.name}{/if}
+          {#if d.faa.registrant_type}· {REGISTRANT_LABELS[d.faa.registrant_type] ?? d.faa.registrant_type}{/if}
+          {#if d.faa.mfr}· {d.faa.mfr} {d.faa.model ?? ''}{/if}
+          {#if d.faa.year}· built {d.faa.year}{/if}
+          {#if d.faa.seats}· {d.faa.seats} seats{/if}
+        </p>
+      {/if}
+      {#if Object.keys(d.filled_from).length}
+        <p class="small muted">
+          {#each Object.entries(groupBySource(d.filled_from)) as [src, fields], i (src)}{i ? ' · ' : ''}{fields.join(', ')} from {SOURCE_LABELS[src] ?? src}{/each}
         </p>
       {/if}
     </div>

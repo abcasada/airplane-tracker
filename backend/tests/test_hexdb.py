@@ -167,3 +167,5 @@ async def test_runtime_queues_unknown_aircraft_and_reenriches(authed: Harness) -
     assert track.classification is not None
     r = await authed.client.get("/api/status")
     assert r.json()["hexdb"]["found"] == 1 and route.call_count == 1
+    detail = (await authed.client.get("/api/aircraft/4ca87c")).json()
+    assert detail["filled_from"]["type_code"] == "hexdb" and detail["faa"] is None

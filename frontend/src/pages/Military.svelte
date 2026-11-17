@@ -15,6 +15,7 @@
     owner_keywords: string[]
     government_keywords: string[]
     police_keywords: string[]
+    government_registrant_types: string[]
   }
   interface ReviewItem extends AircraftSummary {
     reasons: string[]
@@ -93,6 +94,12 @@
     } catch (e) {
       toast(errorMessage(e), 'error')
     }
+  }
+
+  function toggleGovRegistrant(on: boolean) {
+    if (!settings) return
+    const rest = settings.government_registrant_types.filter((t) => t !== 'government')
+    settings.government_registrant_types = on ? [...rest, 'government'] : rest
   }
 
   async function reset() {
@@ -265,6 +272,14 @@
         <label class="field">Police owner words
           <textarea rows="6" bind:value={lists.police_keywords}></textarea></label>
       </div>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={settings.government_registrant_types.includes('government')}
+          onchange={(e) => toggleGovRegistrant(e.currentTarget.checked)}
+        />
+        Mark aircraft registered to a government in the FAA registry (federal, state or local; US civil aircraft only) as government
+      </label>
       <div class="row">
         <button class="primary" onclick={save}>Save</button>
         <button onclick={reset}>Reset to defaults</button>
