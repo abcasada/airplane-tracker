@@ -5,6 +5,7 @@
   import { catalog, loadCatalog } from '../lib/catalog.svelte'
   import { describePrediction, fmtAlt, fmtDuration } from '../lib/format'
   import AircraftPhoto from '../components/AircraftPhoto.svelte'
+  import FR24Lookup from '../components/FR24Lookup.svelte'
   import LiveMap from '../components/LiveMap.svelte'
   import type { AircraftSummary, Place } from '../lib/types'
 
@@ -65,7 +66,10 @@
 
 <div class="page stack">
   <a href="#/live" class="small">← Live</a>
-  {#if error}<p class="error">{error}</p>{/if}
+  {#if error}
+    <p class="error">{error}</p>
+    {#if !d}<FR24Lookup {hex} onfound={load} />{/if}
+  {/if}
   {#if d}
     {@const a = d.summary}
     <div class="card stack">
@@ -106,6 +110,8 @@
         </p>
       {/if}
     </div>
+
+    <FR24Lookup hex={a.hex} onfound={load} />
 
     {#if a.lat != null}
       <div class="mini-map">
