@@ -7,6 +7,7 @@ name, kind and position) and filters whose name already exists are reused instea
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -14,12 +15,14 @@ from pydantic import BaseModel, Field
 from app import __version__
 from app.alerts.manager import AlertingSettings
 from app.classify.military import ClassifierSettings
+from app.classify.suggest import SuggestionPrefs
 from app.clock import Clock
 from app.db import Database
 from app.filters.exclusions import ExclusionIn, ExclusionRepo
 from app.filters.facts import ANY_VIEWPOINT
 from app.filters.models import Condition, FilterDefinition, FilterIn, Group
 from app.filters.repo import FilterRepo
+from app.ingest.poller import SourcePrefs
 from app.places.models import Place, PlaceIn
 from app.places.repo import PlaceRepo
 from app.predict.engine import PredictionSettings
@@ -29,6 +32,8 @@ SETTINGS: dict[str, type[BaseModel]] = {
     "alerting": AlertingSettings,
     "prediction": PredictionSettings,
     "classifier": ClassifierSettings,
+    "military_suggestions": SuggestionPrefs,
+    "sources": SourcePrefs,
 }
 
 
@@ -50,6 +55,7 @@ class BackupOverride(BaseModel):
     is_military: bool
     note: str | None = None
     created_at: float = 0
+    snapshot: dict[str, Any] | None = None  # what the classifier saw; feeds review suggestions
 
 
 class Backup(BaseModel):
@@ -66,7 +72,7 @@ async def export(db: Database, clock: Clock) -> dict[str, Any]:
     filters = await FilterRepo(db, clock).all()
     exclusions = await ExclusionRepo(db, clock).all()
     overrides = await db.fetchall(
-        "SELECT key, is_military, note, created_at FROM military_overrides"
+        "SELECT key, is_military, note, created_at, snapshot_json FROM military_overrides"
     )
     settings = {}
     for key, model in SETTINGS.items():
@@ -99,6 +105,7 @@ async def export(db: Database, clock: Clock) -> dict[str, Any]:
                 "is_military": bool(r["is_military"]),
                 "note": r["note"],
                 "created_at": r["created_at"],
+                "snapshot": json.loads(r["snapshot_json"]) if r["snapshot_json"] else None,
             }
             for r in overrides
         ],
@@ -189,11 +196,15 @@ async def restore(
 
     for o in b.military_overrides:
         await db.execute(
-            "INSERT INTO military_overrides(key, is_military, note, created_at) "
-            "VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET "
-            "is_military = excluded.is_military, note = excluded.note",
-            (o.key, int(o.is_military), o.note, o.created_at or clock.now()),
-        )
+            "INSERT INTO military_overrides(key, is_military, note, created_at, snapshot_json) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET "
+            "is_military = excluded.is_military, note = excluded.note, "
+            "snapshot_json = COALESCE(excluded.snapshot_json, military_overrides.snapshot_json)",
+            (
+                o.key, int(o.is_military), o.note, o.created_at or clock.now(),
+                json.dumps(o.snapshot) if o.snapshot else None,
+            ),
+        )  # fmt: skip
         counts["overrides"] += 1
 
     if include_settings:

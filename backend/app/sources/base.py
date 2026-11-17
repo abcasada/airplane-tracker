@@ -53,20 +53,51 @@ class SourceBatch:
 
 
 class SourceError(Exception):
-    def __init__(self, message: str, status: int | None = None) -> None:
+    def __init__(
+        self, message: str, status: int | None = None, retry_after_s: float | None = None
+    ) -> None:
         super().__init__(message)
         self.status = status
+        self.retry_after_s = retry_after_s  # when the source says how long to wait
 
     @property
     def is_client_error(self) -> bool:
         return self.status is not None and 400 <= self.status < 500
 
 
+# Sources that are the user's own receiver(s): the `seen_by_my_receiver` filter field.
+RECEIVER_SOURCES = ("receiver", "receiver-uat")
+# Every live source the app can use, for the `sources` filter field's choices.
+KNOWN_SOURCES = ("adsb.fi", "adsb.lol", "flyitalyadsb", "opensky", *RECEIVER_SOURCES)
+
+
 class AreaSource(Protocol):
+    """Answers point/radius queries. `max_rate_per_s` is the published sustained limit (requests
+    per second, or credits per second for credit-metered sources); the poller uses at most half."""
+
     name: str
-    max_rate_per_s: float  # the published limit; the poller uses at most half
+    max_rate_per_s: float
 
     async def fetch(self, query: AreaQuery) -> SourceBatch: ...
+
+
+@runtime_checkable
+class MeteredSource(Protocol):
+    """An area source whose requests cost a variable number of credits (e.g. by area size)."""
+
+    max_cost: float
+
+    def cost(self, query: AreaQuery) -> float: ...
+
+
+@runtime_checkable
+class FeedSource(Protocol):
+    """Returns everything it hears, with no query area and no rate limit (a local receiver)."""
+
+    name: str
+    interval_s: float
+
+    async def fetch_all(self) -> SourceBatch: ...
 
 
 @runtime_checkable

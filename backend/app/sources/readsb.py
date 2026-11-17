@@ -92,10 +92,14 @@ def parse_aircraft(ac: dict[str, Any], now: float, source: str) -> Observation |
     return obs
 
 
-def parse_payload(payload: Any, source: str, fallback_now: float) -> SourceBatch:
+def parse_payload(
+    payload: Any, source: str, fallback_now: float, local_clock: bool = False
+) -> SourceBatch:
+    """`local_clock`: ignore the payload's own "now" (a receiver's clock may be off) and date
+    reports from our clock instead; readsb's ages are relative, so that's exact."""
     if not isinstance(payload, dict):
         raise SourceError(f"{source}: unexpected response shape")
-    now_ms = _num(payload.get("now"))
+    now_ms = None if local_clock else _num(payload.get("now"))
     now = now_ms / 1000.0 if now_ms and now_ms > 1e11 else (now_ms or fallback_now)
     batch = SourceBatch(source=source, fetched_at=now)
     for ac in payload.get("ac") or payload.get("aircraft") or []:
@@ -117,6 +121,7 @@ class ReadsbHttpSource:
         max_rate_per_s: float,
         hex_url_template: str | None = None,
         reg_url_template: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.name = name
         self.url_template = url_template
@@ -125,15 +130,17 @@ class ReadsbHttpSource:
         self.max_rate_per_s = max_rate_per_s
         self.hex_url_template = hex_url_template
         self.reg_url_template = reg_url_template
+        self.headers = {"Accept-Encoding": "gzip", **(headers or {})}
 
     def url(self, q: AreaQuery) -> str:
+        nm = max(1, min(250, math.ceil(q.radius_nm)))
         return self.url_template.format(
-            lat=round(q.lat, 4), lon=round(q.lon, 4), nm=max(1, min(250, math.ceil(q.radius_nm)))
+            lat=round(q.lat, 4), lon=round(q.lon, 4), nm=nm, km=math.ceil(nm * 1.852)
         )
 
     async def _get(self, url: str) -> SourceBatch:
         try:
-            resp = await self.http.get(url, headers={"Accept-Encoding": "gzip"}, timeout=15)
+            resp = await self.http.get(url, headers=self.headers, timeout=15)
         except httpx.HTTPError as e:
             raise SourceError(f"{self.name}: {type(e).__name__}: {e}") from e
         if resp.status_code != 200:
@@ -184,4 +191,19 @@ def adsblol(http: httpx.AsyncClient, clock: Clock) -> ReadsbHttpSource:
         max_rate_per_s=1.0,
         hex_url_template="https://api.adsb.lol/v2/hex/{hexes}",
         reg_url_template="https://api.adsb.lol/v2/reg/{reg}",
+    )
+
+
+def flyitaly(http: httpx.AsyncClient, clock: Clock, api_key: str) -> ReadsbHttpSource:
+    """FlyItalyADSB free tier: 30 req/min and 300,000 req/month per key, radius ≤500 km (our
+    250 nm cap is 463 km). The monthly quota is the tighter one: ~0.11 req/s sustained."""
+    return ReadsbHttpSource(
+        "flyitalyadsb",
+        "https://api.flyitalyadsb.com/v2/lat/{lat}/lon/{lon}/dist/{km}",
+        http,
+        clock,
+        max_rate_per_s=min(30 / 60, 300_000 / (31 * 86400)),
+        hex_url_template="https://api.flyitalyadsb.com/v2/icao/{hexes}",
+        reg_url_template="https://api.flyitalyadsb.com/v2/reg/{reg}",
+        headers={"X-Api-Key": api_key},
     )

@@ -61,7 +61,19 @@ Run your own ntfy server and connect it in **Settings → Notifications (ntfy)**
 
 You can also set `NTFY_URL`, `NTFY_TOPIC` and `NTFY_TOKEN` in `.env`. Values from `.env` win over the UI. Set `PUBLIC_URL` too, so notifications can open the app and offer Mute / Not useful buttons.
 
-## 4. Install on your phone
+## 4. Optional data sources
+
+adsb.fi and adsb.lol work without setup. Each source below turns on when its settings are in `.env` (then `docker compose up -d`), and shows up in **System → Sources** with its budget use and how many aircraft only it saw. Details and sign-up steps: **[SOURCES.md](SOURCES.md)**.
+
+The receiver is reached from inside the container, so use the Pi's IP address (or a name your DNS server resolves); `pi.local` mDNS names usually don't resolve there. Check with `docker compose exec airplane-tracker python -c "import urllib.request as u; print(len(u.urlopen('http://<pi-ip>/tar1090/data/aircraft.json').read()))"`. The app reads it every second but records only every 5th second for replay.
+
+| Source | `.env` | Budget the app keeps to |
+|---|---|---|
+| FlyItalyADSB | `FLYITALY_API_KEY=…` (free key by email at flyitalyadsb.com) | ≤50% of the free tier's 300,000 requests/month (~1 request every 18 s) |
+| Your receiver | `RECEIVER_URL=http://<pi-ip>/tar1090/data/aircraft.json` (ultrafeeder/readsb); optional `RECEIVER_UAT_URL` for dump978 (978 MHz UAT) | none: read every second (`RECEIVER_INTERVAL_S`) over your LAN |
+| OpenSky Network | `OPENSKY_CLIENT_ID=…`, `OPENSKY_CLIENT_SECRET=…` (API client from your account page); `OPENSKY_DAILY_CREDITS=8000` if you're an active feeder | ≤50% of the daily credits (default 2,000 of 4,000: one small-area request every ~43 s) |
+
+## 5. Install on your phone
 
 Open the site in Chrome on Android → menu → **Install app** (or **Add to Home screen**). It then opens full-screen like a native app.
 

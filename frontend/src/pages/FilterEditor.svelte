@@ -8,10 +8,12 @@
   import GroupEditor from '../components/GroupEditor.svelte'
   import Modal from '../components/Modal.svelte'
   import NotifyEditor from '../components/NotifyEditor.svelte'
+  import SimpleEditor from '../components/SimpleEditor.svelte'
   import { del, errorMessage, get, post, put } from '../lib/api'
-  import { catalog, loadCatalog } from '../lib/catalog.svelte'
+  import { catalog, loadCatalog, simpleOptions } from '../lib/catalog.svelte'
   import { fmtTime } from '../lib/format'
   import { navigate } from '../lib/router.svelte'
+  import { fromTree, loadViewPref, saveViewPref, type BuilderView } from '../lib/simple'
   import { toast } from '../lib/toast.svelte'
   import {
     blankFilter,
@@ -41,6 +43,17 @@
   let why = $state<{ matches: boolean; explanation: ExplainNode; aircraft: AircraftSummary; errors: string[] } | null>(null)
   let tab = $state<'build' | 'preview'>('build')
   let history = $state<{ id: number; version: number; name: string; note: string; created_at: number; summary: string }[] | null>(null)
+
+  // Simple mode is a view over the same tree; it shows whenever the tree fits it and the
+  // viewer prefers it (the default until they pick, remembered per device).
+  let view = $state<BuilderView>(loadViewPref() ?? 'simple')
+  const simpleCheck = $derived(draft && catalog.loaded ? fromTree(draft.definition.root, simpleOptions()) : null)
+  const showSimple = $derived(view === 'simple' && simpleCheck?.ok === true)
+
+  function chooseView(v: BuilderView) {
+    view = v
+    saveViewPref(v)
+  }
 
   const isNew = $derived(id === 'new')
   const dirty = $derived(draft !== null && JSON.stringify(draft) !== original)
@@ -235,8 +248,26 @@
     <div class="cols">
       <div class="col build" class:hide={tab !== 'build'}>
         <section class="card">
-          <h2>Conditions</h2>
-          <GroupEditor group={draft.definition.root} funnel={funnelById} />
+          <div class="cond-head">
+            <h2>Conditions</h2>
+            <div class="segmented" role="group" aria-label="Builder">
+              <button class:on={showSimple} onclick={() => chooseView('simple')} title="A flat list of the common filters">Simple</button>
+              <button class:on={!showSimple} onclick={() => chooseView('advanced')} title="Any field, operator and nested groups">Advanced</button>
+            </div>
+          </div>
+          {#if showSimple}
+            {#key draft.definition.root}
+              <SimpleEditor group={draft.definition.root} funnel={funnelById} />
+            {/key}
+          {:else}
+            {#if view === 'simple' && simpleCheck && !simpleCheck.ok}
+              <div class="simple-note small">
+                Simple mode can't show this filter, so it opens in the full builder:
+                <ul>{#each simpleCheck.reasons as r (r)}<li>{r}</li>{/each}</ul>
+              </div>
+            {/if}
+            <GroupEditor group={draft.definition.root} funnel={funnelById} />
+          {/if}
         </section>
         {#if saved}<WatchStatus filterId={saved.id} {dirty} />{/if}
         <section class="card">
@@ -380,6 +411,28 @@
   .segmented button.on {
     background: var(--accent);
     color: var(--accent-contrast);
+  }
+  .cond-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .cond-head h2 {
+    margin: 0;
+  }
+  .simple-note {
+    background: var(--surface-2);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    color: var(--text-muted);
+  }
+  .simple-note ul {
+    margin: 4px 0 0;
+    padding-left: 18px;
   }
   .sentence {
     margin: 4px 0 0;

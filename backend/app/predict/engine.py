@@ -434,13 +434,24 @@ def deterministic_path(track: Track, proj: _Projections) -> list[tuple[float, fl
     return [(round(a, 5), round(b, 5)) for a, b in pts]
 
 
+# Hysteresis counts cycles, tuned on ~10 s polling. Several merged sources (or a 1 Hz receiver)
+# deliver batches much faster, so live and replay predict at most this often.
+MIN_CYCLE_S = 5.0
+
+
 class Predictor:
     def __init__(
-        self, settings: PredictionSettings | None = None, seed: int = 7, paths: bool = True
+        self,
+        settings: PredictionSettings | None = None,
+        seed: int = 7,
+        paths: bool = True,
+        min_cycle_s: float = 0.0,
     ) -> None:
         self.settings = settings or PredictionSettings()
         self.rng = np.random.default_rng(seed)
         self.paths = paths  # map polylines; replay doesn't need them
+        self.min_cycle_s = min_cycle_s
+        self.last_cycle: float | None = None
 
     def update(
         self,
@@ -449,6 +460,10 @@ class Predictor:
         now: float,
         runways: dict[int, list[Runway]],
     ) -> None:
+        last = self.last_cycle
+        if last is not None and 0 <= now - last < self.min_cycle_s:
+            return
+        self.last_cycle = now
         s = self.settings
         active_places = [p for p in places if p.is_active(now)]
         # One terrain floor for the shared projections: places in reach are in one region.

@@ -105,7 +105,7 @@ services:
 
 ## 3. Data sources
 
-> **v4 proposal (2026-10-31), pending your answers:** use every free source plus your own receiver, merged by ICAO hex, and use paid sources (Flightradar24 first) only on demand for aircraft a filter cares about. The full list, terms, feeder perks and a sign-up checklist are in **[SOURCES.md](SOURCES.md)**. Changes to the design below:
+> **v4 (2026-10-31, approved; merge built 2026-11-10):** use every free source plus your own receiver, merged by ICAO hex, and use paid sources (Flightradar24 first) only on demand for aircraft a filter cares about. The full list, terms, feeder perks and a sign-up checklist are in **[SOURCES.md](SOURCES.md)**. Changes to the design below:
 > - **Failover becomes merge.** Every enabled live source is polled within its own budget (≤50% of its published limit) and merged by hex; the freshest position wins. Each aircraft records which sources saw it (`sources` and `seen_by_my_receiver` fields), and a **Sources report** shows how many aircraft each source saw that no other did.
 > - **Local receiver** (readsb/ultrafeeder `aircraft.json`, optional 978 MHz UAT) is a source with no rate limit, polled every second over the Docker network.
 > - **Paid sources are never polled continuously.** They answer only for filter candidates that the free feeds lost, and on-demand lookups, behind a monthly budget cap with a credit meter.
@@ -116,9 +116,10 @@ services:
 | Source | Access | Rate limit | Terms | Live check | Verdict |
 |---|---|---|---|---|---|
 | **adsb.fi Open Data** — `opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{nm}` (≤250 nm) | No key | **1 req/s**; 4xx responses count toward a **temporary IP block** | Personal, **non-commercial**; **must cite and link adsb.fi** | 200 OK. Has `r`, `t`, `desc`, `ownOp`, `year`, **`dbFlags`**, `nav_heading`, `nav_altitude_mcp`, vertical rates, `squawk`, `emergency`, `category`. | **Primary** |
-| **adsb.lol** — `api.adsb.lol/v2/point/{lat}/{lon}/{nm}` (≤250 nm) | No key today (a key "obtained by feeding" is planned) | Unpublished, "dynamic" | **ODbL**; contact them for production use | 200 OK, same JSON shape | **Failover** |
+| **adsb.lol** — `api.adsb.lol/v2/point/{lat}/{lon}/{nm}` (≤250 nm) | No key today (a key "obtained by feeding" is planned) | Unpublished, "dynamic" | **ODbL**; contact them for production use | 200 OK, same JSON shape | **Merged** (was failover) |
 | airplanes.live | — | — | — | **403** "Please contact us…" | Excluded |
-| OpenSky Network | OAuth2 | 4,000 credits/day registered | Non-commercial | not polled | Possible later fallback. No type or registration. |
+| **FlyItalyADSB** — `api.flyitalyadsb.com/v2/lat/{lat}/lon/{lon}/dist/{km}` (≤500 km free) | Free key (`X-Api-Key`) | 30 req/min, 300,000/month per key | CC BY-SA 4.0, one-line credit | not polled (mock-tested only) | **Merged, opt-in** (`FLYITALY_API_KEY`) |
+| **OpenSky Network** — `opensky-network.org/api/states/all` (bounding box) | OAuth2 client credentials | 4,000 credits/day (8,000 as a feeder); 1–4 credits per box by area | Non-commercial (research/education); cite OpenSky | not polled (mock-tested only) | **Merged, opt-in** (`OPENSKY_CLIENT_ID`/`_SECRET`), credit-metered. No type or registration. |
 
 **Coverage around Salina** (live check, 80 nm around KSLN on 2026-10-15):
 
@@ -134,18 +135,30 @@ services:
   - It also gets an **outer circle** (radius + horizon × 8 nm/min, ≈ 85 nm for a 10-min horizon, polled every 30 s).
   - Everything slows to 60 s when nothing is in reach.
   - Overlapping circles merge. Places within ~15 nm of each other (home, KSLN, the range) collapse into one inner and one outer query.
-- Token-bucket budget ≤0.5 req/s per source (half of adsb.fi's limit). The Salina setup uses ~0.13 req/s.
-- Circuit breaker per source, failover adsb.fi → adsb.lol. Exponential backoff on any 4xx/429.
+- **Every enabled source is polled for every circle, each on its own schedule** (one asyncio loop per source, so a slow source never delays the others). Each has its own token bucket at ≤50% of its published sustained limit, and its own circuit breaker with exponential backoff on any 4xx/429 (30 s doubling to 5 min). The Salina setup uses ~0.13 req/s per source.
+- A source whose budget can't poll every circle at its interval (credit- or month-limited ones) skips circles that lie inside another circle, so it still covers the whole area, just less often.
+- Credit-metered sources (OpenSky) declare a cost per request; the bucket counts credits, not requests. A source that says how long to wait (OpenSky's `X-Rate-Limit-Retry-After-Seconds`) is left alone that long, even past the 5-minute cap.
+- Lookups of followed aircraft (`watch.py`) are not merged: the first healthy lookup source answers, spending its own budget.
 - Bandwidth: a few KB per poll around Salina (tens of MB/day). Even very busy JFK was 32–38 KB per 80 nm poll.
 
 ### 3.3 Pluggable source interface
 
 `Source` protocol → normalized `Observation` (nm, kt, ft, ft/min, degrees true, UTC epoch seconds). The merge layer keys on ICAO hex and keeps the freshest position.
 
+**Merge rules** (`tracks/store.py`, built 2026-11-10): every batch from every source goes through the same track store.
+
+- The freshest position wins (by position time). State (altitude, speed, squawk…) comes from the freshest report; a report more than 2 s older than what the track has (a slower source) only fills in what's missing (database fields, callsign, category), unless it carries a newer position (e.g. an aggregator's MLAT fix for an aircraft the receiver hears only as Mode S).
+- Database fields (registration, type, owner, year, `dbFlags`) are only ever filled in, never cleared by a source that lacks them.
+- Each track remembers when each source last heard it: filter fields `sources` (heard in the last 60 s) and `seen_by_my_receiver`.
+- History points are kept ≥4 s apart, so 40 points still span ≥2.5 min when positions arrive every second.
+- Prediction runs at most every 5 s (`MIN_CYCLE_S`), live and in replay: its on/off hysteresis counts cycles and was tuned on ~10 s polling, and merged sources deliver batches faster.
+
+**Sources report** (`ingest/sourcestats.py`, System page): per source, status, use vs budget, aircraft seen and aircraft *only* that source saw, for the last hour, the last 24 h and per UTC day (14 days, persisted). Only positions inside the polled circles count, so receiver reports from beyond the areas and worldwide lookups don't inflate a source. Memory: 15-minute buckets of hex → source bitmask for 24 h, capped at 20,000 aircraft per bucket. Each configured source can be switched off and on from the report (setting `sources`, in backups); a switched-off source is neither polled nor used for lookups, and keeps its keys.
+
 Kinds:
 
-- **area** (point/radius APIs: adsb.fi, adsb.lol, future OpenSky/FR24)
-- **local** (a receiver's `aircraft.json`, if you ever add one)
+- **area** (point/radius APIs: adsb.fi, adsb.lol, FlyItalyADSB, OpenSky; FR24 later, on demand only)
+- **feed** (a receiver's `aircraft.json`: everything it hears, no query area, no rate limit). Read every second, dated by our clock, recorded every 5th second, and a feed batch triggers filter evaluation at most about once a second.
 - **schedule** (filed flight plans, e.g. FAA SWIM, §3.5)
 
 Enrichment plug-ins (routes, flight plans) have their own interface with a per-source budget guard. Paid ones plug in there without touching the engine.
@@ -229,6 +242,7 @@ FR24's military filter isn't publicly documented; it appears to use their own ai
 - Score = 1 − ∏(1 − wᵢ). Weights and lists are editable in the dashboard.
 - **Government** and **police** are separate classes (plane-alert-db CMPG Gov/Pol, owner text such as FAA, CBP, "STATE OF …"). FR24 lumps these together with military; here they're separate fields.
 - Validation: compare against the `dbFlags`-only baseline on recordings. The dashboard lists "possible military" (score 0.3–0.6) for review.
+- **Suggestions from your overrides** (*done*, `classify/suggest.py`). Marking an aircraft stores a snapshot of what the classifier saw (callsign, registration, owner, flags), because callsigns are transient. The review page re-runs the one classifier over your marks (live track first, then the snapshot, then the datasets) and suggests edits you accept or dismiss: add a callsign prefix (≥3 aircraft marked military with the same letters+number callsign and none marked not military), remove a listed prefix or owner word (≥3 marked not military, none military), add an owner text as an owner word (≥3 marked military, no word matches it yet), or move a signal weight one slider step at a time (0.05) to the smallest change that brings ≥3 of your marks in line without flipping any other mark. Each comes with a reason, the aircraft behind it, and how many tracked aircraft it would flip right now. Nothing changes until you accept; accepting edits the same classifier settings as the sliders and lists, so live alerting, the preview and the backtest follow. Dismissed suggestions stay dismissed (setting `military_suggestions`, in backups) until you restore them. Two settings on the page: the minimum number of agreeing marks (default 3, 2–20; "≥3" above means this number), and an opt-in to bring a dismissed suggestion back once twice as many aircraft support it as when you dismissed it.
 
 ---
 
@@ -367,7 +381,8 @@ filter_versions(id PK, filter_id, version, definition_json,   -- the filter AST 
 exclusions(id PK, scope ('global', filter_id), kind ('hex','reg','type','operator','callsign','expr'),
            value, until, note, created_at)                     -- quick mutes from notifications/alerts
 
-military_overrides(key PK, is_military, note, created_at)
+military_overrides(key PK, is_military, note, created_at,
+                   snapshot_json)   -- classifier inputs when marked (feeds review suggestions)
 classifier_settings(key PK, value_json)  -- signal weights, callsign/registration/operator lists
 
 alerts(id PK, dedup_key, hex, callsign, reg, type_code, filter_id, filter_version_id, place_id,
@@ -529,7 +544,10 @@ Notifications: a take-off in the same cycle as a new match is announced in that 
 
 Generic filter fields: `took_off_recently`, `landed_recently` (last 10 min), `takeoff_airport`, `landing_airport`. For example, "anything that took off from KSLN in the last 10 minutes" works without a watchlist.
 
-**Later (proposed): an FR24-style "simple mode"** for the builder: a flat panel of the common filters (registration, callsign, type, airline/operator, altitude and speed ranges, origin/destination, category, military), each a single row, compiling to the same expression tree. The full builder stays for complex filters.
+**FR24-style "simple mode" (built 2026-11-10):** the builder has a **Simple | Advanced** toggle. Simple is a flat panel of common rows: registration, callsign, type, airline code, operator/owner, emitter category, military (any/yes/no), altitude and ground-speed ranges, claimed origin and destination, and distance from a place. Empty rows are ignored; an aircraft must match every filled row. It is only a view over the same expression tree (`frontend/src/lib/simple.ts`, a pure tree⇄rows converter with vitest tests), so preview, funnel (counts per row), "why not?", backtest and alerting are unchanged.
+- Rows write: exact values → `in`, or `glob` when a value has `*`, `?` or `[`; operator → `contains`; category → `in`; military → `is_true`/`is_false`; ranges → `ge`/`le`, or `between` when both ends are set (`gt`/`lt` from existing trees are kept).
+- **Simple shape:** an enabled "all of" root holding only enabled conditions on those fields, at most one per field, with those operators. Anything else (nested groups, any/none, other fields, other operators, switched-off conditions) stays in Advanced, which lists why. Simple → Advanced always works. Round trips are lossless (conditions keep their ids and order); conditions with no values yet are dropped on the first simple edit.
+- Field labels, units, help, enums, places and autocomplete come from the catalog (route origin/destination now autocomplete airports). The chosen view is remembered per device (localStorage); with no choice yet, Simple is used whenever the filter fits it.
 
 ### 10.2 Builder and live preview
 - **Visual builder:** add/remove/reorder conditions, nest groups, toggle a condition off without deleting it.
@@ -566,7 +584,7 @@ Built (Phase 3): "What if?" on the filter editor runs the draft (and the saved v
 ### 10.6 Other screens
 - **Map:** places (circles, airports with runways, polygons); aircraft colored by matched filter; predicted paths with uncertainty bands; details sheet (all fields, military reasons, route, photo).
 - **Places:** home, airports by ICAO, area polygons (draw or paste), travel viewpoints with dates, "Use my location", visibility settings.
-- **Military review:** "possible military" list, overrides, signal weights and lists.
+- **Military review:** "possible military" list, overrides, signal weights and lists, and list/weight suggestions from your overrides (§5.2).
 - **Settings:** sources status, HA connection test and channel list, defaults (global lead/confidence/visibility), safety ceiling, 2FA, data refresh, attribution (adsb.fi link, adsb.lol ODbL, plane-alert-db ODbL, OpenStreetMap, OurAirports).
 - Works on phone (stacked cards, bottom sheets) and desktop (side-by-side builder and preview).
 
@@ -630,11 +648,11 @@ Each phase ends usable, with tests passing and the container working. **The filt
 ### Phase 4 — History and refinement
 - Sightings history fields ("rare visitor" filters); 👍/👎 stats per filter. *Done.*
 - FAA airspace search for area polygons; day/night field. *Done:* the area form searches FAA ADDS special use airspace by name or near a point (on demand, cached 7 days), merges stacked sectors with the same outline (R-3601A + B → surface to FL230), converts AGL limits with the ground elevation, and pre-fills active hours when the published times are a single window (time zone from the FAA GMT offset and DST flag).
-- Tune confidence factors on replay data; classifier-list updates from the review loop.
+- Tune confidence factors on replay data; classifier-list updates from the review loop (*done:* review suggestions, §5.2).
 
 ### Phase 5 — Sources, ntfy, extras (re-planned v4, see SOURCES.md)
-- ntfy notifier (§9.1) and the military review page's list suggestions from your overrides.
-- Multi-source merge + Sources report; FlyItalyADSB and OpenSky; local receiver; FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
+- ntfy notifier (§9.1) and the military review page's list suggestions from your overrides. *Both done* (suggestions: §5.2).
+- Multi-source merge + Sources report (*done*); FlyItalyADSB and OpenSky (*done*); local receiver (*done*, `RECEIVER_URL`, optional `RECEIVER_UAT_URL`); FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
 - Dropped: Web Push backup channel (ntfy instead) and GHCR image releases (your decision).
 - Backup/restore of places and filters. *Backup/restore done:* Settings → Backup downloads one JSON file (places, filters, mutes, settings, military overrides; never credentials). Restore merges, remaps place ids inside filters and mutes, skips places and filters that already exist, and keeps this install's home.
 

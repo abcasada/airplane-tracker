@@ -1,4 +1,5 @@
 import { get } from './api'
+import type { SimpleOptions } from './simple'
 import type { FieldDef, Place } from './types'
 
 export const OP_LABELS: Record<string, string> = {
@@ -80,4 +81,19 @@ export function placesFor(f: FieldDef): Place[] {
 export function opLabel(f: FieldDef | undefined, op: string): string {
   if (f?.type === 'bool') return op === 'is_true' ? 'is yes' : 'is no'
   return OP_LABELS[op] ?? op
+}
+
+/** Catalog lookups for simple mode. New place rows follow you, like the templates. */
+export function simpleOptions(): SimpleOptions {
+  return {
+    fieldLabel: (key) => catalog.byKey[key]?.label ?? key,
+    opLabel: (key, op) => opLabel(catalog.byKey[key], op),
+    placeFor: (key) => {
+      const f = catalog.byKey[key]
+      if (!f?.place) return null
+      if (f.any_viewpoint) return 0
+      const options = placesFor(f)
+      return (options.find((p) => p.is_home) ?? options[0])?.id ?? null
+    },
+  }
 }

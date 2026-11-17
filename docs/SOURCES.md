@@ -1,11 +1,14 @@
 # Data sources: plan and sign-up checklist
 
-Status: **proposed** (2026-10-31). Nothing below is built yet except adsb.fi, adsb.lol, the
-enrichment datasets and the FAA airspace search. Terms and prices were checked on 2026-10-31 and
+Status: approved (2026-10-31). Built: adsb.fi, adsb.lol, the multi-source merge with the Sources
+report, FlyItalyADSB, OpenSky and the local receiver source (all 2026-11-10), the enrichment
+datasets and the FAA airspace search. Terms and prices were checked on 2026-10-31 and
 change often; re-check each before signing up.
 
-Secrets (keys, tokens, passwords) go in `.env` or the `/data` volume, never in the repo. Every
-source can be turned on/off and shows its status, budget use and errors on the System page.
+Secrets (keys, tokens, passwords) go in `.env` or the `/data` volume, never in the repo. Keyed
+sources turn on when their keys are set. Every source shows its status, budget use, errors and
+unique contribution in the Sources report on the System page, where each source can also be
+switched off and on.
 
 ## How the sources fit together
 
@@ -25,7 +28,15 @@ worth keeping.
 
 ## Free live sources
 
-### 1. Your own receiver (planned hardware)
+### 1. Your own receiver (software built, hardware planned)
+
+- **Built 2026-11-10:** set `RECEIVER_URL` to the receiver's `aircraft.json` (ultrafeeder/tar1090:
+  `http://<pi>/tar1090/data/aircraft.json`, or readsb's `/data/aircraft.json`) and, for UAT,
+  `RECEIVER_UAT_URL` to dump978's (`http://<pi>/skyaware978/data/aircraft.json`). They're read
+  every second (`RECEIVER_INTERVAL_S`), parsed with the readsb parser and dated by the app's clock
+  (the Pi's clock doesn't matter). Source names `receiver` and `receiver-uat` drive the
+  `seen_by_my_receiver` filter field. Everything the receiver hears is tracked, but the Sources
+  report counts only aircraft inside the polled areas, so it compares like with like.
 
 - **Gives:** the best low-altitude coverage near home (pattern traffic, helicopters, low military),
   1-second updates, no rate limits, no terms.
@@ -66,13 +77,13 @@ worth keeping.
 - **Your part:** buy the hardware, decide where it lives (USB into this server, or a Raspberry Pi
   near the antenna), and tell me the feeder accounts you create.
 
-### 2. adsb.fi (built, primary)
+### 2. adsb.fi (built)
 
 - No key. 1 request/s public limit (we use ≤0.5/s), ≤250 nm radius. Personal, non-commercial;
   must link adsb.fi (done on the Live and System pages). Feeders get `/v2/snapshot`.
 - **Your part:** nothing. Optionally feed it.
 
-### 3. adsb.lol (built, failover → becomes a merged source)
+### 3. adsb.lol (built, merged)
 
 - No key today; rate limits "dynamic"; ODbL. A key "obtained by feeding" is announced, undated.
 - **Your part:** nothing now. Feed it once your receiver runs.
@@ -85,16 +96,41 @@ worth keeping.
 - **Your part:** either feed it from your receiver, or email them (they ask to be contacted) and
   ask whether a personal, non-commercial alert app polling ≤0.5 req/s around a few places is OK.
 
-### 5. FlyItalyADSB
+### 5. FlyItalyADSB (built, opt-in)
 
-- Free key by email, no receiver needed. Free tier: 30 req/min, 300,000/month, 500 km radius;
+- **Built 2026-11-10:** `GET https://api.flyitalyadsb.com/v2/lat/{lat}/lon/{lon}/dist/{km}` with
+  the `X-Api-Key` header (radius in **km**; our 250 nm cap is 463 km). Response is readsb JSON
+  (`now` in seconds, `ac`), parsed by `readsb.parse_payload`. It's also a lookup source
+  (`/v2/icao/{hex,hex}`, `/v2/reg/{reg}`), used only if adsb.fi and adsb.lol are both down.
+- **Budget:** the monthly quota binds before the per-minute one (300,000/month ≈ 0.11 req/s vs
+  30/min = 0.5 req/s), so the app keeps to ≤0.056 req/s, about one request every 18 s. With the
+  inner (10 s) and outer (30 s) circles that's not enough for both, so FlyItalyADSB polls only the
+  outer circle (it contains the inner one) every 30 s: ~86,000 requests/month (with a single
+  circle, the budget spaces polls ~18 s apart).
+
+- Free key by email (`POST /v2/keys`, instant), no receiver needed. Free tier: 30 req/min, 300,000/month, 500 km radius;
   commercial use allowed, attribution one line (CC BY-SA 4.0). ~3,200 receivers, unfiltered
   (military included), ADS-B Exchange v2 format, so it plugs into our existing parser.
 - Coverage is mostly Europe and North America; how much it adds around Salina will show in the
   Sources report.
 - **Your part:** request a free key at flyitalyadsb.com → `FLYITALY_API_KEY`.
 
-### 6. OpenSky Network
+### 6. OpenSky Network (built, opt-in)
+
+- **Built 2026-11-10:** `GET https://opensky-network.org/api/states/all?lamin=…&lomin=…&lamax=…&lomax=…&extended=1`
+  with a Bearer token from the client-credentials grant at
+  `auth.opensky-network.org/…/openid-connect/token` (tokens last 30 min; the app renews a minute
+  early, and once more on a 401). The query circle becomes its bounding box. State vectors are
+  converted from m, m/s to ft, kt, ft/min; `extended=1` adds the emitter category.
+- **Budget = credits:** 1 credit for a box ≤25 sq°, 2 ≤100, 3 ≤400, 4 above (a 250 nm circle at
+  39° N is ~89 sq° = 2 credits; the usual 35–85 nm circles cost 1). The app's bucket counts
+  credits and keeps to half the daily allowance (`OPENSKY_DAILY_CREDITS`, default 4,000 → 2,000 a
+  day, one 1-credit request every ~43 s). It polls only the outer circle when there are two. A 429
+  backs off for as long as `X-Rate-Limit-Retry-After-Seconds` says; the System page shows the
+  remaining credits from `X-Rate-Limit-Remaining`.
+- **Terms to check:** OpenSky licenses its data for non-profit research and education, government
+  and internal evaluation; personal hobby use isn't named explicitly. Credit: "The OpenSky
+  Network, https://opensky-network.org" (shown on the Live and System pages when enabled).
 
 - Free account. OAuth2 client credentials only (basic auth was retired). 4,000 credits/day
   (8,000 as an active feeder); a regional `/states/all` box costs 1–4 credits, so at 1 credit per
@@ -188,8 +224,8 @@ stops cleanly at the cap. Responses are cached and never exported or committed.
 ## Order I'd build them
 
 1. **Multi-source merge** + Sources report, then FlyItalyADSB and OpenSky (you only need two free
-   keys).
-2. **Local receiver** source, as soon as your hardware runs (no keys).
+   keys). *Built.*
+2. **Local receiver** source, as soon as your hardware runs (no keys). *Built; waiting on hardware.*
 3. **FR24** gap-fill and lookups with the budget cap.
 4. **FAA registry + hexdb.io** enrichment.
 5. **FAA SWIM** schedule source and `filed_arrival` facts (after you approve the Solace library).

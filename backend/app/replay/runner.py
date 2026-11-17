@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from app.filters.engine import CompiledFilter
 from app.history import SightingsBook
 from app.ingest.recorder import read_batches
-from app.predict.engine import PredictionSettings, Predictor
+from app.predict.engine import MIN_CYCLE_S, PredictionSettings, Predictor
 
 from .backtest import BacktestEngine, BacktestSpec
 from .core import Replay
@@ -31,7 +31,7 @@ async def evaluate_recordings(
     replay = Replay(
         rt.places,
         enrich=rt.enrich_track,
-        predictor=Predictor(settings, seed, paths=False),
+        predictor=Predictor(settings, seed, paths=False, min_cycle_s=MIN_CYCLE_S),
         runways=rt.runways,
         tz=rt.alerts.tz,
         history=SightingsBook(rt.ctx.db, read_only=True),

@@ -135,7 +135,7 @@ class FakeSource:
         return SourceBatch(self.name, 0, [Observation(hex="abc", source=self.name, seen_at=0)])
 
 
-async def test_poller_fails_over_and_respects_intervals() -> None:
+async def test_poller_backs_off_a_failing_source_and_respects_intervals() -> None:
     clock = FakeClock(1000)
     primary, backup = FakeSource("a", fail=429), FakeSource("b")
     got: list[str] = []
@@ -178,3 +178,22 @@ def test_recorder_roundtrip(tmp_path: Path) -> None:
     assert [len(o) for _, o in got] == [4, 1]
     assert got[0][1][0] == decode(encode(batch.observations[0]))
     assert rec.prune(batch.fetched_at + 30 * 86400) == 1
+
+
+async def test_disabled_source_is_not_polled_until_switched_back_on() -> None:
+    clock = FakeClock(1000)
+    a, b = FakeSource("a"), FakeSource("b")
+    got: list[str] = []
+
+    async def on_batch(batch: SourceBatch, _c: Any) -> None:
+        got.append(batch.source)
+
+    circles = plan([_place(38.8, -97.6, 10)], 0, PlannerConfig())
+    poller = Poller([a, b], clock, lambda: circles, on_batch)
+    poller.set_disabled(["b"])
+    await poller.tick()
+    assert got == ["a"] and b.calls == 0
+    assert [s["enabled"] for s in poller.status()] == [True, False]
+    poller.set_disabled([])
+    await poller.tick()  # a isn't due yet; b polls straight away
+    assert got == ["a", "b"]
