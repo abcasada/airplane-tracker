@@ -1,6 +1,7 @@
 """Flightradar24 (paid): parsing, credit cap, cache, gap-fill planning. All HTTP is mocked and
 every payload is synthetic."""
 
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,10 @@ from app.ingest.fr24 import (
     LookupRefusedError,
     matched_by,
 )
+from app.main import create_app
+from app.sources.base import Observation
 from app.sources.fr24 import POSITIONS_URL, USAGE_URL, FR24Source, parse_positions
+from tests.conftest import Harness, make_settings
 
 T = datetime(2026, 11, 15, 12, 0, tzinfo=UTC).timestamp()
 
@@ -239,3 +243,104 @@ def test_gap_filler_schedule_and_batching() -> None:
     fl = parse_positions({"data": [flight()]})
     assert matched_by(fl, b) and matched_by(fl, GapTarget("x", callsign="rch452"))
     assert not matched_by(fl, a)
+
+
+# ---- wired into the app ------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def fr24_app(tmp_path: Path) -> AsyncIterator[Harness]:
+    clock = FakeClock(T)
+    app = create_app(make_settings(tmp_path, fr24_api_key="test-key"), clock)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            h = Harness(app, client, clock, app.state.ctx)
+            await h.setup_account()
+            yield h
+
+
+async def test_not_configured_without_a_key(authed: Harness) -> None:
+    r = await authed.client.get("/api/fr24")
+    assert r.json()["configured"] is False
+    r = await authed.client.post("/api/fr24/lookup", json={"registration": "N1"})
+    assert r.status_code == 404
+    names = [s["name"] for s in (await authed.client.get("/api/sources")).json()["status"]]
+    assert "fr24" not in names
+
+
+@respx.mock
+async def test_on_demand_lookup_ingests_and_meters(fr24_app: Harness) -> None:
+    h = fr24_app
+    rt = h.ctx.rt()
+    route = respx.get(POSITIONS_URL).mock(
+        return_value=httpx.Response(200, json={"data": [flight(timestamp=iso(T - 2))]})
+    )
+    r = await h.client.post("/api/fr24/lookup", json={"registration": "05-5140"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["flights"][0]["dest_icao"] == "KSLN" and body["credits"] == 8.0
+    assert body["month"]["used"] == 8.0 and body["attribution"]["label"] == "Flightradar24"
+    t = rt.store.get("ae5420")
+    assert t is not None and "fr24" in t.sources(h.clock.now())
+    assert rt.recorder.bytes_written == 0  # FR24 data is never recorded
+    # A lookup by hex resolves the registration from the track and hits the cache.
+    r = await h.client.post("/api/fr24/lookup", json={"hex": "AE5420"})
+    assert r.json()["from_cache"] is True and route.call_count == 1
+
+    rows = {s["name"]: s for s in (await h.client.get("/api/sources")).json()["status"]}
+    fr = rows["fr24"]
+    assert fr["kind"] == "lookup" and fr["month"]["cap"] == 20000 and fr["used_today"] == 8.0
+    assert fr["lookups"]["on_demand"] == 1 and fr["lookups"]["cache_hits"] == 1
+
+    # The per-source switch covers FR24 too.
+    r = await h.client.put("/api/sources/fr24", json={"enabled": False})
+    assert r.status_code == 200
+    h.clock.advance(600)
+    r = await h.client.post("/api/fr24/lookup", json={"registration": "N12345"})
+    assert r.status_code == 409 and "switched off" in r.json()["detail"]
+    assert route.call_count == 1
+
+    # Credits and cached FR24 data never go into a backup.
+    export = (await h.client.get("/api/backup")).text
+    assert "fr24_credits" not in export and "KSLN" not in export
+
+
+@respx.mock
+async def test_gap_fill_only_for_lost_followed_aircraft(fr24_app: Harness) -> None:
+    h = fr24_app
+    rt = h.ctx.rt()
+    await h.ctx.db.execute(
+        "INSERT INTO aircraft_db(icao, reg, type_code) VALUES ('ae5420', '05-5140', 'C17')"
+    )
+    body = {
+        "name": "Follow",
+        "definition": {"root": {"mode": "all", "children": [
+            {"type": "cond", "id": "a", "field": "hex", "op": "eq", "value": "ae5420"},
+        ]}},
+    }  # fmt: skip
+    assert (await h.client.post("/api/filters", json=body)).status_code == 201
+    route = respx.get(POSITIONS_URL).mock(
+        side_effect=lambda _req: httpx.Response(
+            200, json={"data": [flight(timestamp=iso(h.clock.now() - 2))]}
+        )
+    )
+    # Heard by a free source just now: no FR24 request.
+    rt.store.update(
+        Observation(hex="ae5420", source="adsb.fi", seen_at=h.clock.now(), callsign="RCH452")
+    )
+    assert await rt.fr24_gap_fill() == 0 and route.call_count == 0
+    # Lost by the free feeds: one request by registration (from the aircraft database).
+    h.clock.advance(120)
+    assert await rt.fr24_gap_fill() == 1
+    assert route.calls[0].request.url.params["registrations"] == "05-5140"
+    assert rt.fr24 is not None and rt.fr24.counts["gap_fill"] == 1
+    # FR24 keeps it alive, but it isn't asked again for 5 minutes.
+    h.clock.advance(60)
+    assert await rt.fr24_gap_fill() == 0 and route.call_count == 1
+    h.clock.advance(GAP_FILL_INTERVAL_S)
+    assert await rt.fr24_gap_fill() == 1 and route.call_count == 2
+    # Switched off: nothing.
+    await h.client.put("/api/sources/fr24", json={"enabled": False})
+    h.clock.advance(GAP_FILL_INTERVAL_S)
+    assert await rt.fr24_gap_fill() == 0 and route.call_count == 2

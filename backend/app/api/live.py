@@ -29,7 +29,7 @@ async def aircraft(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
         "now": ectx.now,
         "home_id": home.id if home else None,
         "aircraft": rt.summaries(rt.facts_for_all(ectx)),
-        "sources": [s.name for s in rt.poller.slots],  # enabled, for the attribution line
+        "sources": [s["name"] for s in rt.source_status()],  # for the attribution line
     }
 
 
@@ -99,7 +99,7 @@ async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
         "tracks": len(rt.store),
         "places_active": len(rt.active_places()),
         "circles": [c.__dict__ for c in rt.circles()],
-        "sources": rt.poller.status(),
+        "sources": rt.source_status(),
         "datasets": await rt.datasets.status(),
         "dataset_busy": rt.datasets.busy,
         "recordings": rt.recorder.usage(),
@@ -131,7 +131,7 @@ async def status_(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
 async def sources_report(ctx: Ctx, _: CurrentUser) -> dict[str, Any]:
     """Per source: status, use vs budget, and aircraft seen / seen by no other source."""
     rt = ctx.rt()
-    status_ = rt.poller.status()
+    status_ = rt.source_status()
     report = rt.source_stats.report(ctx.clock.now(), [s["name"] for s in status_])
     return {"status": status_, **report}
 
@@ -146,7 +146,7 @@ async def toggle_source(
 ) -> dict[str, Any]:
     """Switch a configured source on or off (it stays configured; keys still come from env)."""
     rt = ctx.rt()
-    if name not in {s.name for s in rt.poller.slots}:
+    if name not in {s["name"] for s in rt.source_status()}:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such source")
     prefs = SourcePrefs.model_validate(await ctx.db.get_json("sources", {}))
     off = [n for n in prefs.disabled if n != name] + ([] if body.enabled else [name])

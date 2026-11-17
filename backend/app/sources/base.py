@@ -68,7 +68,7 @@ class SourceError(Exception):
 # Sources that are the user's own receiver(s): the `seen_by_my_receiver` filter field.
 RECEIVER_SOURCES = ("receiver", "receiver-uat")
 # Every live source the app can use, for the `sources` filter field's choices.
-KNOWN_SOURCES = ("adsb.fi", "adsb.lol", "flyitalyadsb", "opensky", *RECEIVER_SOURCES)
+KNOWN_SOURCES = ("adsb.fi", "adsb.lol", "flyitalyadsb", "opensky", *RECEIVER_SOURCES, "fr24")
 
 
 class AreaSource(Protocol):
