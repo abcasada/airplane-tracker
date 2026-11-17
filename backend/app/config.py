@@ -4,7 +4,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Docker bridge networks; cloudflared reaches the app from one of these.
@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     receiver_url: str | None = None
     receiver_uat_url: str | None = None
     receiver_interval_s: float = Field(1.0, ge=0.5, le=60)
+    # Flightradar24 API (paid): on-demand lookups and gap-fill only, under a monthly credit cap.
+    fr24_api_key: str | None = Field(
+        None, validation_alias=AliasChoices("fr24_api_key", "fr24_api_token")
+    )
+    fr24_monthly_credits: int = Field(20000, ge=0)  # Explorer includes 30,000 a month
+    fr24_credits_per_flight: float = Field(8.0, gt=0, le=1000)
+    fr24_gap_fill: bool = True
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod

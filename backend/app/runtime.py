@@ -31,6 +31,17 @@ from app.filters.models import (
 )
 from app.filters.repo import FilterRepo
 from app.history import SightingsBook, day_of
+from app.ingest.fr24 import (
+    GAP_FILL_TICK_S,
+    LOST_AFTER_S,
+    MAX_GAP_TARGETS,
+    GapFiller,
+    GapTarget,
+    LookupRefusedError,
+    LookupResult,
+    build_fr24,
+    matched_by,
+)
 from app.ingest.planner import PlannerConfig, QueryCircle, plan
 from app.ingest.poller import Poller, SourcePrefs
 from app.ingest.recorder import Recorder
@@ -60,6 +71,9 @@ LIVE_PUBLISH_MIN_INTERVAL_S = 2.0
 # Receivers are read every second; recording every 5th second is plenty for replay.
 RECEIVER_RECORD_EVERY_S = 5.0
 FEED_EVAL_EVERY_S = 0.9
+FR24_CIRCLE = QueryCircle("fr24", 0.0, 0.0, 0.0, GAP_FILL_TICK_S, "fr24")
+# How long FR24 keeps filling gaps for an aircraft that matched a filter before it was lost.
+FR24_FOLLOW_MATCHED_S = 1800.0
 
 
 class Runtime:
@@ -100,6 +114,10 @@ class Runtime:
             self.on_batch,
             watch=self.watch,
         )
+        self.fr24 = build_fr24(ctx.settings, ctx.http, ctx.clock, ctx.db)
+        self.gap_filler = GapFiller()
+        # hex → (registration, callsign, last matched) for matched aircraft the free feeds lost
+        self.lost_matched: dict[str, tuple[str | None, str | None, float]] = {}
         self.matches: dict[str, list[int]] = {}  # hex → matching filter ids (last cycle)
         self.last_eval_ms = 0.0
         self.last_eval_at: float | None = None
@@ -121,9 +139,13 @@ class Runtime:
         await self.watch.refresh(self.filters)
         await self.alerts.load()
         self.source_stats.load(await self.ctx.db.get_json("source_stats", {}))
+        if self.fr24 is not None:
+            await self.fr24.load()
         await self.reload_sources()
         if self.ctx.settings.run_background:
             self._spawn(self.poller.run(), "poller")
+            if self.fr24 is not None:
+                self._spawn(self._fr24_loop(), "fr24")
             self._spawn(self._route_loop(), "routes")
             self._spawn(self._maintenance(), "maintenance")
 
@@ -226,6 +248,91 @@ class Runtime:
     async def reload_sources(self) -> None:
         prefs = SourcePrefs.model_validate(await self.ctx.db.get_json("sources", {}))
         self.poller.set_disabled(prefs.disabled)
+        if self.fr24 is not None:
+            self.fr24.enabled = self.fr24.name not in prefs.disabled
+
+    def source_status(self) -> list[dict[str, Any]]:
+        """Every configured source: the polled ones, then the lookup-only paid ones."""
+        return self.poller.status() + ([self.fr24.status()] if self.fr24 is not None else [])
+
+    # ---- Flightradar24 (paid): on demand and gap-fill only -----------------------------------
+
+    async def _fr24_loop(self) -> None:
+        while True:
+            try:
+                await self.fr24_gap_fill()
+            except Exception:
+                log.exception("fr24 gap-fill failed")
+            await asyncio.sleep(GAP_FILL_TICK_S)
+
+    @staticmethod
+    def _free_heard(t: Track | None, now: float) -> bool:
+        """Whether a free source (anything but FR24) heard it recently."""
+        return t is not None and any(
+            s != "fr24" and now - ts <= LOST_AFTER_S for s, ts in t.heard_by.items()
+        )
+
+    async def gap_targets(self, now: float) -> list[GapTarget]:
+        """Filter candidates the free feeds lost: followed aircraft (`watch.py`), and aircraft
+        that matched a filter in the last 30 min."""
+        out: list[GapTarget] = []
+        watched: set[str] = set()
+        for e in self.watch.entries.values():
+            watched |= e.hexes
+            tracks = [t for h in sorted(e.hexes) if (t := self.store.get(h)) is not None]
+            if any(self._free_heard(t, now) for t in tracks):
+                continue
+            reg = e.value if e.kind == "reg" else None
+            for h in sorted(e.hexes):
+                if reg:
+                    break
+                known = self.store.get(h)
+                reg = known.registration if known else None
+                reg = reg or (await self.enricher.lookup(h)).registration
+            cs = max(tracks, key=lambda t: t.last_seen).callsign if tracks else None
+            out.append(GapTarget(f"watch:{e.kind}:{e.value}", reg, cs))
+        for hex_ in self.matches:
+            t = self.store.get(hex_)
+            if t is not None and (t.registration or t.callsign):
+                self.lost_matched[hex_] = (t.registration, t.callsign, now)
+        while len(self.lost_matched) > MAX_GAP_TARGETS:
+            del self.lost_matched[min(self.lost_matched, key=lambda h: self.lost_matched[h][2])]
+        for hex_, (reg, cs, at) in list(self.lost_matched.items()):
+            if now - at > FR24_FOLLOW_MATCHED_S:
+                del self.lost_matched[hex_]
+            elif hex_ not in watched and not self._free_heard(self.store.get(hex_), now):
+                out.append(GapTarget(f"hex:{hex_}", reg, cs))
+        return out[:MAX_GAP_TARGETS]
+
+    async def fr24_gap_fill(self) -> int:
+        """One gap-fill round: a single FR24 request for the lost candidates that are due.
+        Returns the number of positions it added."""
+        svc = self.fr24
+        if svc is None or not svc.enabled or not svc.gap_fill_enabled:
+            return 0
+        now = self.ctx.clock.now()
+        due = self.gap_filler.due(await self.gap_targets(now), now)
+        if not due:
+            return 0
+        regs = [t.registration for t in due if t.registration]
+        css = [t.callsign for t in due if not t.registration and t.callsign]
+        try:
+            res = await svc.lookup(regs, css, "gap_fill")
+        except LookupRefusedError as e:
+            for t in due:  # cap, pace, rate or an error: not a miss, just later
+                self.gap_filler.wait(t, now, max(e.retry_in_s or 0.0, 600.0))
+            return 0
+        for t in due:
+            self.gap_filler.done(t, matched_by(res.flights, t), now)
+        return await self.ingest_fr24(res)
+
+    async def ingest_fr24(self, res: LookupResult) -> int:
+        batch = res.batch
+        for o in batch.observations:
+            self.watch.learn(o.hex, o.registration, batch.fetched_at)
+        if batch.observations:
+            await self.on_batch(batch, FR24_CIRCLE)
+        return len(batch.observations)
 
     async def reload_classifier(self) -> None:
         self.classifier = ClassifierSettings.model_validate(
@@ -368,7 +475,8 @@ class Runtime:
         async with self._lock:
             await self.ingest(batch, circle)
             every = RECEIVER_RECORD_EVERY_S if circle.tier == "feed" else 0.0
-            await asyncio.to_thread(self.recorder.write, batch, every)
+            if batch.source != "fr24":  # FR24's terms: no storing its data beyond the cache
+                await asyncio.to_thread(self.recorder.write, batch, every)
             if self.source_stats.dirty:
                 self.source_stats.dirty = False
                 await self.ctx.db.set_json("source_stats", self.source_stats.to_json())

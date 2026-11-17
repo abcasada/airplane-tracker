@@ -157,7 +157,8 @@ services:
 
 Kinds:
 
-- **area** (point/radius APIs: adsb.fi, adsb.lol, FlyItalyADSB, OpenSky; FR24 later, on demand only)
+- **area** (point/radius APIs: adsb.fi, adsb.lol, FlyItalyADSB, OpenSky)
+- **lookup** (paid, never polled: Flightradar24, §3.4)
 - **feed** (a receiver's `aircraft.json`: everything it hears, no query area, no rate limit). Read every second, dated by our clock, recorded every 5th second, and a feed batch triggers filter evaluation at most about once a second.
 - **schedule** (filed flight plans, e.g. FAA SWIM, §3.5)
 
@@ -168,9 +169,17 @@ Enrichment plug-ins (routes, flight plans) have their own interface with a per-s
 | Service | Price | What it would add |
 |---|---|---|
 | FlightAware AeroAPI Personal | First $5/month of usage free; $0.005 per `/flights/{ident}`; card required | Filed origin/destination for IFR flights, including GA/bizjets |
-| Flightradar24 API Explorer | $9/month, 30,000 credits | Live positions with origin/destination |
+| Flightradar24 API Explorer | $9/month, 30,000 credits | Live positions with origin/destination (**built 2026-11-17**, opt-in) |
 
-Not built until you ask. Any paid source must go through an app-enforced monthly budget cap.
+AeroAPI isn't built until you ask. Any paid source must go through an app-enforced monthly budget cap.
+
+**Flightradar24 (built 2026-11-17, mock-tested only; opt-in with `FR24_API_KEY`).** A lookup-only source, never polled:
+
+- `sources/fr24.py` fetches `GET /api/live/flight-positions/full` by `registrations` and/or `callsigns` (≤15 each; FR24 has no hex filter), with `Accept-Version: v1` and a bearer key, `limit` = number of identifiers. It normalizes to `Observation` (source `fr24`); FR24's `ESTIMATED` positions are shown on demand but never fed into tracks. Origin/destination, flight number and ETA are shown on the aircraft page only (not yet filter fields).
+- `ingest/fr24.py` (`FR24Service`) gates every request: on/off switch (Sources report) → per-identifier cache (`cache` table, namespace `fr24`: 60 s found, 4 min missing, rows dropped after a day) → **monthly credit cap** (`ingest/credits.py`: credits per UTC calendar month, persisted in setting `fr24_credits`, which isn't backed up; default cap `FR24_MONTHLY_CREDITS=20000` of Explorer's 30,000; a request is refused unsent if its worst case would cross the cap; HTTP 402 stops FR24 until next month) → breaker → token bucket at half of Explorer's ~10 req/min (one request per 12 s).
+- Credits are estimated, since FR24 doesn't publish a per-endpoint price in its API spec: `FR24_CREDITS_PER_FLIGHT` (default 8, above the ~6 a third party reported) per flight returned, at least one per request. The Sources report's "Check FR24's own count" calls `/api/usage` (30 days) to calibrate it.
+- **When FR24 is called:** (a) **on demand**: "Look up on Flightradar24" on the aircraft page, also for an aircraft out of range (hex → registration from the database, or the current callsign); (b) **gap-fill** (`FR24_GAP_FILL`, default on): every 30 s, one request for filter candidates that no free source has heard for 90 s: followed aircraft (`watch.py`) and aircraft that matched a filter in the last 30 min. Each is asked again every 5 min while FR24 finds it, backing off to 6 h while it doesn't, and forgotten when a free source hears it. Gap-fill also stays under an even-pace line (the cap spread over the month, plus one day's share), so it can't use up the month before your own lookups.
+- FR24 data is never recorded (so never in replay fixtures), exported or committed. The Sources report shows credits this month vs the cap, today's credits and lookups by kind; positions FR24 adds aren't counted as "seen" there.
 
 ### 3.5 What JetTip does, and whether to copy it
 
@@ -652,7 +661,7 @@ Each phase ends usable, with tests passing and the container working. **The filt
 
 ### Phase 5 — Sources, ntfy, extras (re-planned v4, see SOURCES.md)
 - ntfy notifier (§9.1) and the military review page's list suggestions from your overrides. *Both done* (suggestions: §5.2).
-- Multi-source merge + Sources report (*done*); FlyItalyADSB and OpenSky (*done*); local receiver (*done*, `RECEIVER_URL`, optional `RECEIVER_UAT_URL`); FR24 on demand with a budget cap; FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
+- Multi-source merge + Sources report (*done*); FlyItalyADSB and OpenSky (*done*); local receiver (*done*, `RECEIVER_URL`, optional `RECEIVER_UAT_URL`); FR24 on demand and gap-fill with a monthly credit cap (*built 2026-11-17*, waiting on the subscription); FAA registry and hexdb.io enrichment; FAA SWIM SCDS schedule source (needs the Solace client library); airplanes.live, AeroAPI and ADS-B Exchange if wanted.
 - Dropped: Web Push backup channel (ntfy instead) and GHCR image releases (your decision).
 - Backup/restore of places and filters. *Backup/restore done:* Settings → Backup downloads one JSON file (places, filters, mutes, settings, military overrides; never credentials). Restore merges, remaps place ids inside filters and mutes, skips places and filters that already exist, and keeps this install's home.
 

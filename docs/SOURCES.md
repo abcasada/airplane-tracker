@@ -170,8 +170,21 @@ stops cleanly at the cap. Responses are cached and never exported or committed.
   large receiver network, and positions where community feeds have gaps.
 - **Doesn't add much for military:** FR24 filters aircraft whose operators ask to be hidden, which
   includes much military traffic. The community aggregators are unfiltered.
-- **Your part:** subscribe to Explorer at fr24api.flightradar24.com → `FR24_API_TOKEN`; pick a
-  monthly cap.
+- **Built 2026-11-17** (mock-tested only): lookups by registration/callsign on
+  `/api/live/flight-positions/full` (FR24 can't search by hex), from the aircraft page's "Look up
+  on Flightradar24" and as gap-fill for followed or recently matched aircraft the free feeds lost
+  for 90 s (each every 5 min while found, backing off to 6 h when not; paced to an even share of
+  the month). Cap enforced per calendar month (UTC); the Sources report shows credits used vs cap,
+  has the on/off switch, and can fetch FR24's own 30-day count from `/api/usage`. Credits per
+  flight are an estimate (`FR24_CREDITS_PER_FLIGHT`, default 8) until that count calibrates it.
+  Design: `docs/PLAN.md` §3.4.
+- **Terms:** FR24 API data is for the subscriber's own use. The app credits Flightradar24 (with a
+  link) wherever its data shows, never records, exports or commits it, and keeps only a short-lived
+  private cache.
+- **Your part:** subscribe to Explorer at fr24api.flightradar24.com → `FR24_API_KEY` (the SDK's
+  name `FR24_API_TOKEN` works too); optionally `FR24_MONTHLY_CREDITS` (default 20,000),
+  `FR24_GAP_FILL=false` for on-demand lookups only. Then check "Check FR24's own count" after a
+  few lookups and set `FR24_CREDITS_PER_FLIGHT` to what it shows.
 
 ### ADS-B Exchange (optional)
 
@@ -226,7 +239,7 @@ stops cleanly at the cap. Responses are cached and never exported or committed.
 1. **Multi-source merge** + Sources report, then FlyItalyADSB and OpenSky (you only need two free
    keys). *Built.*
 2. **Local receiver** source, as soon as your hardware runs (no keys). *Built; waiting on hardware.*
-3. **FR24** gap-fill and lookups with the budget cap.
+3. **FR24** gap-fill and lookups with the budget cap. *Built; waiting on the subscription.*
 4. **FAA registry + hexdb.io** enrichment.
 5. **FAA SWIM** schedule source and `filed_arrival` facts (after you approve the Solace library).
 6. airplanes.live, AeroAPI, ADS-B Exchange when you have access and want them.

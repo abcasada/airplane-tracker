@@ -72,6 +72,7 @@ The receiver is reached from inside the container, so use the Pi's IP address (o
 | FlyItalyADSB | `FLYITALY_API_KEY=…` (free key by email at flyitalyadsb.com) | ≤50% of the free tier's 300,000 requests/month (~1 request every 18 s) |
 | Your receiver | `RECEIVER_URL=http://<pi-ip>/tar1090/data/aircraft.json` (ultrafeeder/readsb); optional `RECEIVER_UAT_URL` for dump978 (978 MHz UAT) | none: read every second (`RECEIVER_INTERVAL_S`) over your LAN |
 | OpenSky Network | `OPENSKY_CLIENT_ID=…`, `OPENSKY_CLIENT_SECRET=…` (API client from your account page); `OPENSKY_DAILY_CREDITS=8000` if you're an active feeder | ≤50% of the daily credits (default 2,000 of 4,000: one small-area request every ~43 s) |
+| Flightradar24 (paid) | `FR24_API_KEY=…` (Explorer plan at fr24api.flightradar24.com); optional `FR24_MONTHLY_CREDITS=20000`, `FR24_CREDITS_PER_FLIGHT=8`, `FR24_GAP_FILL=false` | never polled: on-demand lookups and gap-fill only, ≤1 request per 12 s, hard monthly credit cap (default 20,000 of 30,000) |
 
 ## 5. Install on your phone
 
