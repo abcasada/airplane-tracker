@@ -43,7 +43,7 @@ phone through the user's own **ntfy** server. One Docker container; PWA web UI w
   `mypy --strict` clean; frontend check, 37 tests and build clean (host has no Node: run npm in
   `node:22-slim`). **None of the new UI has been looked at in a browser.**
 - **Deployment:** shared Cloudflare tunnel; the app publishes `127.0.0.1:8790` and the tunnel
-  routes `adsb.<domain>` to it (`docs/DEPLOY.md`). PR #5 is deployed and healthy (2026-11-17).
+  routes `adsb.<domain>` to it (`docs/DEPLOY.md`). PR #6 is deployed and healthy (2026-11-17).
   **First-run setup still not done** (0 users, 0 places): nothing is polled, recorded or alerted.
   ntfy v2.34.0 runs on the same server with `deny-all` auth; the app container reaches it via its
   public URL. Setup steps for the user: `docs/NTFY.md` step 2 (a write-only `airplane-tracker`
@@ -54,9 +54,10 @@ phone through the user's own **ntfy** server. One Docker container; PWA web UI w
 - **ntfy** (mock-tested only). First real check: Settings → "Save & send test notification".
 - **Take-off/landing detection** on live traffic (synthetic flights only). Watch for false
   "landed (probably)"; thresholds are constants at the top of `events.py`.
-- **FAA registry download** answered HTTP 503 to a plain request with our User-Agent. If it keeps
-  failing, download `ReleasableAircraft.zip` in a browser into `/data/datasets/`. The FAA column
-  layout doc returned 403, so code tables come from secondary sources: check the first import.
+- **FAA registry:** the first production download and import worked on 2026-11-17 (319,417
+  aircraft, container at ~121 MB). An earlier 503 was transient. If downloads fail later, put a
+  browser-downloaded `ReleasableAircraft.zip` in `/data/datasets/`. Code tables come from
+  secondary sources (the FAA layout doc returned 403): spot-check `registrant_type` values.
 - **FR24**: per-request credit costs aren't published; `FR24_CREDITS_PER_FLIGHT` (default 8) is an
   estimate. Calibrate with "Check FR24's own count" in the Sources report. Terms/attribution and
   whether the plan resets monthly or on the subscription anniversary are unverified.
