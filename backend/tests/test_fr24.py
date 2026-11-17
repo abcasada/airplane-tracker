@@ -344,3 +344,28 @@ async def test_gap_fill_only_for_lost_followed_aircraft(fr24_app: Harness) -> No
     await h.client.put("/api/sources/fr24", json={"enabled": False})
     h.clock.advance(GAP_FILL_INTERVAL_S)
     assert await rt.fr24_gap_fill() == 0 and route.call_count == 2
+
+
+@respx.mock
+async def test_gap_fill_follows_recently_matched_aircraft_for_a_while(fr24_app: Harness) -> None:
+    h = fr24_app
+    rt = h.ctx.rt()
+    route = respx.get(POSITIONS_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    rt.store.update(
+        Observation(hex="a00001", source="adsb.lol", seen_at=h.clock.now(), callsign="SKW1")
+    )
+    rt.matches = {"a00001": [1]}
+    assert await rt.fr24_gap_fill() == 0 and route.call_count == 0  # still heard
+    h.clock.advance(100)
+    await rt.fr24_gap_fill()
+    assert route.calls[0].request.url.params["callsigns"] == "SKW1"  # no registration known
+    # Not found: asked again only after 10 min; after 30 min unmatched it's dropped.
+    rt.matches = {}
+    h.clock.advance(300)
+    await rt.fr24_gap_fill()
+    assert route.call_count == 1
+    h.clock.advance(300)
+    await rt.fr24_gap_fill()
+    assert route.call_count == 2
+    h.clock.advance(1800)
+    assert await rt.gap_targets(h.clock.now()) == [] and rt.lost_matched == {}
