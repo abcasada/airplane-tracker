@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from app import geo
 from app.classify.size import SIZE_CLASSES, size_for
+from app.enrich import faa
 from app.enrich.routes import RouteFit, fit_route
 from app.history import day_of
 from app.places.models import Place
@@ -332,6 +333,19 @@ def _flag(attr: str) -> Compute:
     return compute
 
 
+def _faa(attr: str) -> Compute:
+    def compute(f: LiveFacts, _p: Place | None) -> str | None:
+        info = f.track.info
+        return getattr(info.faa, attr) if info and info.faa else None
+
+    return compute
+
+
+def _enum(table: dict[str, tuple[str, str]]) -> tuple[tuple[str, str], ...]:
+    values = tuple(table.values())
+    return values if any(v == "other" for v, _ in values) else (*values, ("other", "Other"))
+
+
 def _sun(f: LiveFacts, p: Place | None) -> float | None:
     if p is None:
         return None
@@ -400,6 +414,11 @@ for fd in [
              "Airline name, registered owner and plane-alert-db operator combined. Use "
              "'contains' to match part of a name.",
              lambda f, _: _operator(f), suggest="operator"),
+    FieldDef("registrant_type", "FAA registrant type", ID, "enum",
+             "Who the aircraft is registered to in the FAA registry (US civil aircraft only): "
+             "individual, corporation, government (federal, state or local) and so on. Empty "
+             "for aircraft not on the US register.",
+             _faa("registrant_type"), enum=_enum(faa.REGISTRANT_TYPES)),
     FieldDef("type_code", "Aircraft type", AC, "string",
              "ICAO type designator, e.g. C17, K35R, B752. Glob patterns like B7* work.",
              lambda f, _: f.track.type_code, suggest="type_code"),
@@ -414,6 +433,14 @@ for fd in [
              lambda f, _: size_class(f), enum=tuple((s, s.title()) for s in SIZE_CLASSES)),
     FieldDef("year_built", "Year built", AC, "number", "Year of manufacture, when known.",
              lambda f, _: _year(f)),
+    FieldDef("faa_aircraft_type", "FAA aircraft type", AC, "enum",
+             "Kind of aircraft from the FAA registry (US civil aircraft only): fixed wing "
+             "single/multi engine, rotorcraft, glider, balloon…",
+             _faa("aircraft_type"), enum=_enum(faa.AIRCRAFT_TYPES)),
+    FieldDef("faa_engine_type", "FAA engine type", AC, "enum",
+             "Engine type from the FAA registry (US civil aircraft only): reciprocating, "
+             "turboprop, turboshaft, turbofan…",
+             _faa("engine_type"), enum=_enum(faa.ENGINE_TYPES)),
     FieldDef("military", "Military", CL, "bool",
              "Classified military: the combined military score reaches your threshold "
              "(Military settings), or you marked it.",

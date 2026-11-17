@@ -19,6 +19,8 @@ import httpx
 from app.clock import Clock
 from app.db import Database, connect_sync
 
+from . import faa
+
 log = logging.getLogger(__name__)
 
 TAR1090_AIRCRAFT = "https://raw.githubusercontent.com/wiedehopf/tar1090-db/csv/aircraft.csv.gz"
@@ -238,7 +240,11 @@ SPECS = [
     DatasetSpec("vrs-airlines", VRS_AIRLINES, "airlines.csv", import_airlines, refresh_days=30),
     DatasetSpec("ourairports-airports", OURAIRPORTS_AIRPORTS, "airports.csv", import_airports, 30),
     DatasetSpec("ourairports-runways", OURAIRPORTS_RUNWAYS, "runways.csv", import_runways, 30),
+    # The FAA rebuilds it daily; weekly is plenty for registrations.
+    DatasetSpec("faa-registry", faa.URL, faa.FILENAME, faa.import_registry),
 ]
+# Sent instead of If-None-Match when a server gives Last-Modified but no ETag.
+_LM_PREFIX = "lm:"
 
 
 class DatasetManager:
@@ -284,7 +290,31 @@ class DatasetManager:
             except Exception as e:
                 log.warning("dataset %s failed: %s", spec.name, e)
                 await self._record(spec, error=str(e)[:300])
+                if await self._import_local(spec, row):
+                    imported.append(spec.name)
         return imported
+
+    async def _import_local(self, spec: DatasetSpec, row: dict[str, object] | None) -> bool:
+        """A download failed: import a copy the user put in the datasets folder by hand, if it's
+        newer than the last import (some servers refuse automated downloads)."""
+        path = self.dir / spec.filename
+        imported_at = row.get("imported_at") if row else None
+        if not path.is_file():
+            return False
+        if isinstance(imported_at, float) and path.stat().st_mtime <= imported_at:
+            return False
+        self.busy = spec.name
+        try:
+            rows = await asyncio.to_thread(self._import, spec, path)
+        except Exception as e:
+            log.warning("dataset %s: local file failed too: %s", spec.name, e)
+            return False
+        finally:
+            self.busy = None
+        await self._record(spec, version="local", rows=rows, imported=True,
+                           error="download failed; imported the local file")  # fmt: skip
+        log.info("imported %s from the local file: %d rows", spec.name, rows)
+        return True
 
     async def refresh(self, spec: DatasetSpec, etag: str | None = None) -> bool:
         self.busy = spec.name
@@ -292,7 +322,12 @@ class DatasetManager:
             self.dir.mkdir(parents=True, exist_ok=True)
             path = self.dir / spec.filename
             tmp = path.with_suffix(path.suffix + ".part")
-            headers = {"If-None-Match": etag} if etag and path.exists() else {}
+            headers: dict[str, str] = {}
+            if etag and path.exists():
+                if etag.startswith(_LM_PREFIX):
+                    headers["If-Modified-Since"] = etag[len(_LM_PREFIX) :]
+                elif etag != "local":
+                    headers["If-None-Match"] = etag
             async with self.http.stream("GET", spec.url, headers=headers, timeout=120) as resp:
                 if resp.status_code == 304:
                     await self._record(spec)
@@ -303,6 +338,8 @@ class DatasetManager:
                     async for chunk in resp.aiter_bytes():
                         f.write(chunk)
                 new_etag = resp.headers.get("etag")
+                if not new_etag and resp.headers.get("last-modified"):
+                    new_etag = _LM_PREFIX + resp.headers["last-modified"]
             tmp.replace(path)
             rows = await asyncio.to_thread(self._import, spec, path)
             await self._record(spec, version=new_etag, rows=rows, imported=True)

@@ -81,8 +81,9 @@ class Watchlist:
         if regs:
             marks = ",".join("?" * len(regs))
             rows = await self.db.fetchall(
-                f"SELECT icao, reg FROM aircraft_db WHERE reg IN ({marks})",  # noqa: S608
-                tuple(regs),
+                f"SELECT icao, reg FROM aircraft_db WHERE reg IN ({marks}) "  # noqa: S608
+                f"UNION SELECT icao, n_number FROM faa_registry WHERE n_number IN ({marks})",
+                tuple(regs) * 2,
             )
             found: dict[str, set[str]] = {}
             for r in rows:

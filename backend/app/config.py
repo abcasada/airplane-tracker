@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     fr24_monthly_credits: int = Field(20000, ge=0)  # Explorer includes 30,000 a month
     fr24_credits_per_flight: float = Field(8.0, gt=0, le=1000)
     fr24_gap_fill: bool = True
+    # hexdb.io lookups for aircraft the local datasets don't know (≤1 per 2 s, daily cap).
+    hexdb_enabled: bool = True
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod

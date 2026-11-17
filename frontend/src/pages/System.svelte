@@ -12,6 +12,8 @@
     { name: 'adsb.im', url: 'https://adsb.im', note: 'flight routes' },
     { name: 'Planespotters.net', url: 'https://www.planespotters.net', note: 'photos, credited on each photo' },
     { name: 'OurAirports', url: 'https://ourairports.com/data/', note: 'airports and runways (public domain)' },
+    { name: 'FAA aircraft registry', url: 'https://registry.faa.gov/', note: 'US civil registrations, owners and registrant types (Releasable Aircraft Database, public domain)' },
+    { name: 'hexdb.io', url: 'https://hexdb.io', note: 'registration, type and owner for aircraft the other datasets don\'t know (data courtesy of PlaneBase/PlanePlotter and others, as credited on hexdb.io)' },
     { name: 'FAA ADDS', url: 'https://adds-faa.opendata.arcgis.com/', note: 'special use airspace (public domain)' },
     { name: 'USGS EPQS', url: 'https://epqs.nationalmap.gov', note: 'ground elevation (public domain)' },
     { name: 'OpenStreetMap', url: 'https://www.openstreetmap.org/copyright', note: 'map tiles © OpenStreetMap contributors' },
@@ -29,6 +31,16 @@
     circles: { lat: number; lon: number; radius_nm: number; interval_s: number; tier: string }[]
     datasets: { name: string; url: string; rows?: number; imported_at?: number; checked_at?: number; last_error?: string }[]
     dataset_busy: string | null
+    hexdb: {
+      enabled: boolean
+      pending: number
+      requests_today: number
+      daily_cap: number
+      found: number
+      not_found: number
+      backing_off: boolean
+      last_error: string | null
+    }
     recordings: { days: number; bytes: number; retention_days?: number }
     sightings: { rows?: number; days?: number; since?: string | null }
     coverage: { band: string; lowest_height_ft: number | null; reports: number; ground_reports: number }[]
@@ -119,6 +131,15 @@
           </tbody>
         </table>
       </div>
+      <p class="muted small">
+        {#if s.hexdb.enabled}
+          hexdb.io lookups (aircraft the datasets don't know): {s.hexdb.requests_today} / {s.hexdb.daily_cap} today,
+          {s.hexdb.found} found, {s.hexdb.not_found} unknown since start, {s.hexdb.pending} queued.
+          {#if s.hexdb.backing_off}<span class="error">Backing off: {s.hexdb.last_error}</span>{/if}
+        {:else}
+          hexdb.io lookups are off (HEXDB_ENABLED=false).
+        {/if}
+      </p>
       <p class="muted small">Recordings for replay: {s.recordings.days} day(s), {mb(s.recordings.bytes)}.</p>
       <p class="muted small">
         Sightings history (for "rare visitor" fields): {s.sightings.days ?? 0} day(s){s.sightings.since ? ` since ${s.sightings.since}` : ''}.

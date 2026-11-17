@@ -1,21 +1,30 @@
-"""Per-aircraft lookups against the imported datasets, with bounded in-memory caches."""
+"""Per-aircraft lookups against the imported datasets, with bounded in-memory caches.
+
+Precedence for registration, type, owner and year (first one that has a value wins):
+live source data (adsb.fi/adsb.lol send their own database fields; see `Track`) →
+tar1090-db → FAA registry (US civil hex block only) → cached hexdb.io answer.
+"""
 
 import bisect
 import json
 import re
 from collections import OrderedDict
 
+from app.clock import Clock, SystemClock
 from app.db import Database
 
+from . import faa, hexdb
 from .models import AircraftInfo, Airline, PlaneAlertEntry
 
 CACHE_SIZE = 5000
+_HEXDB_FIELDS = {"registration", "type_code", "type_desc", "owner_op"}
 _AIRLINE_CALLSIGN = re.compile(r"^([A-Z]{3})\d")
 
 
 class Enricher:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, clock: Clock | None = None) -> None:
         self.db = db
+        self.clock = clock or SystemClock()
         self._cache: OrderedDict[str, AircraftInfo] = OrderedDict()
         self._range_starts: list[int] = []
         self._ranges: list[tuple[int, int]] = []
@@ -56,6 +65,22 @@ class Enricher:
     def type_info(self, type_code: str | None) -> tuple[int, float, str | None] | None:
         return self.type_stats.get(type_code.upper()) if type_code else None
 
+    def forget(self, hex_: str) -> None:
+        self._cache.pop(hex_.lower(), None)
+
+    async def _fill_hexdb(self, hex_: str, info: AircraftInfo) -> None:
+        row = await self.db.fetchone(
+            "SELECT value, fetched_at FROM cache WHERE namespace = ? AND key = ?",
+            (hexdb.NAMESPACE, hex_),
+        )
+        if row is None:
+            return
+        info.hexdb_checked = hexdb.cache_fresh(row["value"], row["fetched_at"], self.clock.now())
+        # A stale answer is still better than nothing until it's refreshed.
+        values = json.loads(row["value"]) if row["value"] else None
+        if isinstance(values, dict):
+            info.fill("hexdb", **{k: v for k, v in values.items() if k in _HEXDB_FIELDS})
+
     async def lookup(self, hex_: str) -> AircraftInfo:
         hex_ = hex_.lower()
         cached = self._cache.get(hex_)
@@ -93,6 +118,15 @@ class Enricher:
                 link=pa["link"],
                 images=tuple(json.loads(pa["images"])) if pa["images"] else (),
             )
+        if faa.is_us_civil(hex_):
+            row = await self.db.fetchone(faa.LOOKUP_SQL, (hex_,))
+            if row:
+                rec = faa.record_from_row(row)
+                info.faa = rec
+                info.fill("faa", registration=rec.n_number, type_desc=rec.type_desc,
+                          owner_op=rec.name, year=rec.year)  # fmt: skip
+        if not (info.registration and info.type_code and info.owner_op):
+            await self._fill_hexdb(hex_, info)
         self._cache[hex_] = info
         if len(self._cache) > CACHE_SIZE:
             self._cache.popitem(last=False)
