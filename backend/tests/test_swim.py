@@ -8,15 +8,18 @@ from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
 
 from app.clock import FakeClock
 from app.db import Database
+from app.filters.facts import LiveFacts
 from app.ingest import swim as swim_ingest
 from app.ingest import swimstore
 from app.ingest.swim import SwimFeed, swim_config
 from app.ingest.swimstore import FiledFlight, SwimFlights
-from app.sources.base import SourceError
+from app.main import create_app
+from app.sources.base import Observation, SourceBatch, SourceError
 from app.sources.swim import (
     FlightUpdate,
     SolaceConnector,
@@ -28,7 +31,7 @@ from app.sources.swim import (
     parse_payload,
     parse_time,
 )
-from tests.conftest import make_settings
+from tests.conftest import Harness, make_settings
 
 FIXTURES = Path(__file__).parent / "fixtures" / "swim"
 
@@ -425,3 +428,120 @@ def test_connector_reports_a_missing_library(monkeypatch: pytest.MonkeyPatch) ->
         conn.connect()
     assert not conn.is_connected()
     conn.close()  # nothing to close: no error
+
+
+# ---- end to end: fields, routes, Sources report, switch ------------------------------------
+
+SWIM_ENV = {
+    "swim_host": "tcps://scds.example.invalid:55443", "swim_vpn": "TFMS",
+    "swim_username": "user", "swim_password": "secret", "swim_queue": "queue",
+}  # fmt: skip
+ICT = {"name": "Test field", "role": "airport", "airport_icao": "KICT", "lat": 37.65,
+       "lon": -97.43, "elevation_ft": 1333, "radius_nm": 15}  # fmt: skip
+
+
+@pytest.fixture
+async def swim_app(tmp_path: Path) -> AsyncIterator[Harness]:
+    clock = FakeClock(ts("2027-01-15T14:50:00"))  # the test flight is airborne
+    app = create_app(make_settings(tmp_path, **SWIM_ENV), clock)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            h = Harness(app, client, clock, app.state.ctx)
+            await h.setup_account()
+            await add_airports(h.ctx.db)
+            yield h
+
+
+def airliner(now: float, **kw: object) -> Observation:
+    base: dict[str, object] = dict(
+        hex="a0b1c2", source="adsb.fi", seen_at=now, pos_time=now, lat=38.6, lon=-100.5,
+        alt_baro_ft=37000, gs_kt=450, track_deg=100, callsign="TST101", category="A5",
+    )  # fmt: skip
+    base.update(kw)
+    return Observation(**base)  # type: ignore[arg-type]
+
+
+async def test_filed_plan_fields_routes_and_status(swim_app: Harness) -> None:
+    h = swim_app
+    rt = h.ctx.rt()
+    assert rt.swim is not None
+    place_id = (await h.client.post("/api/places", json=ICT)).json()["id"]
+    rt.swim.offer(fixture("flight_plan.xml"))  # KICT is a place now: kept
+    rt.swim.offer(fixture("modify_default_ns.xml"))  # arrArpt="ICT": FAA code
+    await rt.swim.drain()
+    now = h.clock.now()
+    await rt.ingest(SourceBatch("adsb.fi", now, [airliner(now)]))
+    t = rt.store.get("a0b1c2")
+    assert t is not None and t.route is not None and t.route.source == "faa-swim"
+    facts = LiveFacts(t, rt.eval_context())
+    assert facts.get("has_filed_plan") is True
+    assert facts.get("filed_origin") == "KDEN" and facts.get("filed_destination") == "KICT"
+    assert facts.get("filed_aircraft_type") == "B763"
+    assert facts.get("filed_status") == "SCHEDULED"
+    assert facts.get("filed_departure_in_s") == ts("2027-01-15T14:20:00") - now
+    assert facts.get("filed_arrival_in_s") == ts("2027-01-15T15:35:00") - now
+    assert facts.get("filed_to_place", place_id) is True
+    assert facts.get("filed_from_place", place_id) is False
+    assert facts.get("filed_eta_s", place_id) == ts("2027-01-15T15:35:00") - now
+    assert facts.get("route_destination") == "KICT" and facts.get("destined_for", place_id)
+    assert "TST101" not in rt.routes.pending  # adsb.im isn't asked when a plan is known
+
+    # A different callsign has no plan; an unknown is not the same as "no plan".
+    await rt.ingest(SourceBatch("adsb.fi", now, [airliner(now, hex="a0b1c3", callsign="XYZ9")]))
+    other = rt.store.get("a0b1c3")
+    assert other is not None
+    assert LiveFacts(other, rt.eval_context()).get("has_filed_plan") is False
+
+    # Filters can use the fields, and alerts keep them for "why did this fire?".
+    definition = {"root": {"mode": "all", "children": [
+        {"type": "cond", "id": "a", "field": "filed_to_place", "op": "is_true",
+         "place": place_id},
+        {"type": "cond", "id": "b", "field": "filed_aircraft_type", "op": "in", "value": ["B763"]},
+    ]}}  # fmt: skip
+    r = (await h.client.post("/api/filters/preview", json={"definition": definition})).json()
+    assert r["errors"] == [] and [m["hex"] for m in r["matches"]] == ["a0b1c2"]
+
+    upcoming = (await h.client.get("/api/sources/swim/flights")).json()
+    assert upcoming["configured"] is True
+    assert [f["acid"] for f in upcoming["flights"]] == ["TST101"]
+
+    report = (await h.client.get("/api/sources")).json()
+    swim = next(s for s in report["status"] if s["name"] == "faa-swim")
+    assert swim["kind"] == "schedule" and swim["swim"]["kept"] == 2
+    assert "faa-swim" in report["sources"]
+    r2 = await h.client.put("/api/sources/faa-swim", json={"enabled": False})
+    assert r2.status_code == 200
+    assert rt.swim.enabled is False
+    await h.client.put("/api/sources/faa-swim", json={"enabled": True})
+    assert rt.swim.enabled is True
+
+
+async def test_followed_registrations_are_kept(swim_app: Harness) -> None:
+    h = swim_app
+    rt = h.ctx.rt()
+    assert rt.swim is not None
+    body = {"name": "Follow", "definition": {"root": {"mode": "all", "children": [
+        {"type": "cond", "id": "a", "field": "registration", "op": "in", "value": ["N-123TS"]},
+    ]}}}  # fmt: skip
+    assert (await h.client.post("/api/filters", json=body)).status_code == 201
+    rt.swim.offer(fixture("departure_arrival.xml"))  # N123TS: no airport place, but followed
+    await rt.swim.drain()
+    assert "ref:100003" in rt.swim_flights.flights
+    assert "ref:100001" not in rt.swim_flights.flights
+
+
+async def test_fields_are_unknown_without_swim(authed: Harness) -> None:
+    rt = authed.ctx.rt()
+    assert rt.swim is None
+    now = authed.clock.now()
+    await rt.ingest(SourceBatch("adsb.fi", now, [airliner(now)]))
+    t = rt.store.get("a0b1c2")
+    assert t is not None
+    facts = LiveFacts(t, rt.eval_context())
+    assert facts.get("has_filed_plan") is None and facts.get("filed_origin") is None
+    status = (await authed.client.get("/api/sources")).json()["status"]
+    assert "faa-swim" not in [s["name"] for s in status]
+    assert (
+        await authed.client.put("/api/sources/faa-swim", json={"enabled": False})
+    ).status_code == 404
