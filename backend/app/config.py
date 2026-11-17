@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     fr24_gap_fill: bool = True
     # hexdb.io lookups for aircraft the local datasets don't know (≤1 per 2 s, daily cap).
     hexdb_enabled: bool = True
+    # FAA SWIM SCDS (TFMS flight data): on when host, VPN, username, password and queue are set.
+    swim_host: str | None = None  # e.g. tcps://<scds-host>:55443
+    swim_vpn: str | None = None
+    swim_username: str | None = None
+    swim_password: str | None = None
+    swim_queue: str | None = None
+    swim_trust_store: str = "/etc/ssl/certs"  # directory of CA certificates for TLS
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ds:tfmDataService xmlns:ds="urn:us:gov:dot:faa:atm:tfm:tfmdataservice" xmlns:fdm="urn:us:gov:dot:faa:atm:tfm:flightdata" xmlns:nxcm="urn:us:gov:dot:faa:atm:tfm:flightdatacommonmessages" xmlns:nxce="urn:us:gov:dot:faa:atm:tfm:tfmdatacoreelements">
+  <fltdOutput>
+    <fdm:fltdMessage acid="TST101" airline="TST" arrArpt="KICT" depArpt="KDEN" fdTrigger="HCS_FLIGHT_PLAN_MSG" flightRef="100001" msgType="flightPlanInformation" sensitivity="A" sourceFacility="ZDV" sourceTimeStamp="2027-01-15T12:00:00Z">
+      <fdm:flightPlanInformation>
+        <nxcm:qualifiedAircraftId aircraftCategory="JET" userCategory="COMMERCIAL">
+          <nxce:aircraftId>TST101</nxce:aircraftId>
+          <nxce:computerId><nxce:facilityIdentifier>ZDV</nxce:facilityIdentifier><nxce:idNumber>123</nxce:idNumber></nxce:computerId>
+          <nxce:gufi>TST0000001</nxce:gufi>
+          <nxce:igtd>2027-01-15T14:00:00Z</nxce:igtd>
+          <nxce:departurePoint><nxce:airport>KDEN</nxce:airport></nxce:departurePoint>
+          <nxce:arrivalPoint><nxce:airport>KICT</nxce:airport></nxce:arrivalPoint>
+        </nxcm:qualifiedAircraftId>
+        <nxcm:flightAircraftSpecs equipmentQualifier="L" specialAircraftQualifier="HEAVY JET">H/B763/L</nxcm:flightAircraftSpecs>
+        <nxcm:speed><nxce:filedTrueAirSpeed>460</nxce:filedTrueAirSpeed></nxcm:speed>
+        <nxcm:ncsmRouteData>
+          <nxcm:etd etdType="PROPOSED" timeValue="2027-01-15T14:10:00Z"/>
+          <nxcm:eta etaType="ESTIMATED" timeValue="2027-01-15T15:25:00Z"/>
+          <nxcm:routeOfFlight>KDEN..XXXXX..KICT</nxcm:routeOfFlight>
+        </nxcm:ncsmRouteData>
+      </fdm:flightPlanInformation>
+    </fdm:fltdMessage>
+    <fdm:fltdMessage acid="OTH200" airline="OTH" arrArpt="KJFK" depArpt="KBOS" flightRef="100002" msgType="flightPlanInformation" sourceFacility="ZBW" sourceTimeStamp="2027-01-15T12:00:01Z">
+      <fdm:flightPlanInformation>
+        <nxcm:qualifiedAircraftId aircraftCategory="JET" userCategory="COMMERCIAL">
+          <nxce:aircraftId>OTH200</nxce:aircraftId>
+          <nxce:departurePoint><nxce:airport>KBOS</nxce:airport></nxce:departurePoint>
+          <nxce:arrivalPoint><nxce:airport>KJFK</nxce:airport></nxce:arrivalPoint>
+        </nxcm:qualifiedAircraftId>
+        <nxcm:flightAircraftSpecs equipmentQualifier="L">A320</nxcm:flightAircraftSpecs>
+      </fdm:flightPlanInformation>
+    </fdm:fltdMessage>
+  </fltdOutput>
+</ds:tfmDataService>

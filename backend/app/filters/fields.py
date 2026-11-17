@@ -18,11 +18,13 @@ from app.classify.size import SIZE_CLASSES, size_for
 from app.enrich import faa
 from app.enrich.routes import RouteFit, fit_route
 from app.history import day_of
+from app.ingest.swimstore import FiledFlight
 from app.places.models import Place
 from app.places.nearby import NearAirport
 from app.predict.arrival import ArrivalInputs, arrival_score
 from app.predict.engine import is_active, prediction_for
 from app.sources.base import KNOWN_SOURCES, RECEIVER_SOURCES
+from app.sources.swim import airport_aliases
 from app.sun import CIVIL_DARK_DEG, SUNRISE_DEG, sun_elevation_deg
 from app.tracks import events as flight_events
 
@@ -283,6 +285,61 @@ def _pred_active(f: LiveFacts, p: Place | None) -> bool | None:
     return is_active(f.track, p.id)
 
 
+def _filed(f: LiveFacts) -> FiledFlight | None:
+    """The FAA flight plan (SWIM) this aircraft is flying now, matched by callsign or, for GA,
+    registration. Callers check that SWIM is configured (`ctx.extras["swim"]`) first."""
+    if "__filed" not in f._memo:
+        store = f.ctx.extras.get("swim")
+        t = f.track
+        f._memo["__filed"] = (
+            store.best_for(t.callsign, t.registration, f.ctx.now) if store is not None else None
+        )
+    filed: FiledFlight | None = f._memo["__filed"]
+    return filed
+
+
+def _filed_value(get: Callable[[FiledFlight, float], Any]) -> Compute:
+    def compute(f: LiveFacts, _p: Place | None) -> Any:
+        fl = _filed(f)
+        return get(fl, f.ctx.now) if fl is not None else None
+
+    return compute
+
+
+def _has_filed(f: LiveFacts, _p: Place | None) -> bool | None:
+    if f.ctx.extras.get("swim") is None:
+        return None
+    return _filed(f) is not None
+
+
+def _in_s(t: float | None, now: float) -> float | None:
+    return None if t is None else round(t - now)
+
+
+def _same_airport(code: str | None, p: Place) -> bool:
+    mine = _airport_code(p)
+    if not code or not mine:
+        return False
+    return code in airport_aliases(mine) or mine in airport_aliases(code)
+
+
+def _filed_place(end: Literal["origin", "destination"]) -> Compute:
+    def compute(f: LiveFacts, p: Place | None) -> bool | None:
+        fl = _filed(f)
+        if p is None or fl is None:
+            return None
+        return _same_airport(getattr(fl, end), p)
+
+    return compute
+
+
+def _filed_eta(f: LiveFacts, p: Place | None) -> float | None:
+    fl = _filed(f)
+    if p is None or fl is None or not _same_airport(fl.destination, p):
+        return None
+    return _in_s(fl.arrival_time, f.ctx.now)
+
+
 def _local_dt(f: LiveFacts) -> datetime:
     return datetime.fromtimestamp(f.ctx.now, f.ctx.tz)
 
@@ -391,9 +448,9 @@ def _history(method: str) -> Compute:
 
 # ---- catalog ------------------------------------------------------------------------------------
 
-ID, AC, CL, ST, PL, PR, RT, HI, TM = (
-    "Identity", "Aircraft", "Classification", "State", "Place", "Prediction", "Route", "History",
-    "Time",
+ID, AC, CL, ST, PL, PR, RT, FP, HI, TM = (
+    "Identity", "Aircraft", "Classification", "State", "Place", "Prediction", "Route",
+    "Filed plan", "History", "Time",
 )  # fmt: skip
 
 for fd in [
@@ -649,6 +706,42 @@ for fd in [
     FieldDef("route_off_track_nm", "Distance off route", RT, "number",
              "How far the aircraft is from the claimed route's leg.", _route_value("off_track_nm"),
              unit="nm"),
+    FieldDef("has_filed_plan", "Has a filed flight plan", FP, "bool",
+             "An FAA flight plan (SWIM TFMS) matches this aircraft now, by callsign or, for "
+             "general aviation, registration. Only US IFR flights to or from your airport places, "
+             "or of aircraft you follow, are kept. Unknown when SWIM isn't set up.",
+             _has_filed),
+    FieldDef("filed_origin", "Filed departure airport", FP, "string",
+             "Departure airport of the matching FAA flight plan, e.g. KDEN.",
+             _filed_value(lambda fl, _now: fl.origin), suggest="airports"),
+    FieldDef("filed_destination", "Filed arrival airport", FP, "string",
+             "Arrival airport of the matching FAA flight plan, e.g. KICT.",
+             _filed_value(lambda fl, _now: fl.destination), suggest="airports"),
+    FieldDef("filed_aircraft_type", "Filed aircraft type", FP, "string",
+             "ICAO type designator in the flight plan, e.g. B763. Can differ from the database "
+             "type when the airline swaps aircraft.",
+             _filed_value(lambda fl, _now: fl.aircraft_type), suggest="type_code"),
+    FieldDef("filed_status", "Flight plan status", FP, "string",
+             "TFMS flight status, e.g. SCHEDULED, PROPOSED, ACTIVE, COMPLETED (as the FAA "
+             "sends it).", _filed_value(lambda fl, _now: fl.status)),
+    FieldDef("filed_departure_in_s", "Filed departure in", FP, "number",
+             "Seconds until the plan's departure time: the actual time once reported, else the "
+             "estimated or scheduled one. Negative = that long ago.",
+             _filed_value(lambda fl, now: _in_s(fl.departure_time, now)), unit="s"),
+    FieldDef("filed_arrival_in_s", "Filed arrival in", FP, "number",
+             "Seconds until the plan's arrival time (FAA estimate, or the actual time once "
+             "reported). Negative = that long ago.",
+             _filed_value(lambda fl, now: _in_s(fl.arrival_time, now)), unit="s"),
+    FieldDef("filed_to_place", "Filed to arrive here", FP, "bool",
+             "The matching FAA flight plan's arrival airport is this airport.",
+             _filed_place("destination"), place=True, place_roles=("airport",)),
+    FieldDef("filed_from_place", "Filed to depart here", FP, "bool",
+             "The matching FAA flight plan's departure airport is this airport.",
+             _filed_place("origin"), place=True, place_roles=("airport",)),
+    FieldDef("filed_eta_s", "Filed arrival here in", FP, "number",
+             "Seconds until the FAA's estimated arrival at this airport, when the plan is filed "
+             "to it. Negative = that long ago.", _filed_eta, unit="s", place=True,
+             place_roles=("airport",)),
     FieldDef("local_hour", "Time of day", TM, "number",
              "Local time as hours, e.g. 6.5 = 06:30. Use 'between' for a window.",
              lambda f, _: (d := _local_dt(f)).hour + d.minute / 60, unit="h"),

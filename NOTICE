@@ -32,5 +32,8 @@ included in this repository.
 - FAA Aeronautical Data Delivery Service (ADDS), special use airspace
   (https://adds-faa.opendata.arcgis.com/). US government work, public domain. Queried only when
   the user searches for airspace, and cached.
+- FAA SWIM Cloud Distribution Service, TFMS flight data (https://www.faa.gov/air_traffic/technology/swim),
+  only when the user sets SWIM credentials. Non-operational use under the FAA's SCDS terms. Received
+  with the Solace PubSub+ Python API (solace-pubsubplus, Apache License 2.0), installed in the image.
 - Map tiles (c) OpenStreetMap contributors (https://www.openstreetmap.org/copyright).
 - USGS Elevation Point Query Service (https://epqs.nationalmap.gov). Public domain.

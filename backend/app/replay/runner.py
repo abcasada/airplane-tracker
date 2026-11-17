@@ -35,7 +35,7 @@ async def evaluate_recordings(
         runways=rt.runways,
         tz=rt.alerts.tz,
         history=SightingsBook(rt.ctx.db, read_only=True),
-        extras={"airports": rt.airport_index},
+        extras={"airports": rt.airport_index, "swim": rt.swim_extra()},
     )
     metrics = MetricsCollector(rt.places, settings.lead_max_s)
     places = rt.places_by_id()

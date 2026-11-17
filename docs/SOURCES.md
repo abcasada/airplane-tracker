@@ -207,12 +207,35 @@ stops cleanly at the cap. Responses are cached and never exported or committed.
 - **Adds:** filed flight plans and flight status for US IFR flights, typically many hours before
   departure: "a C-17 has filed into KSLN for 14:20" style alerts. Sensitive flights (most military)
   are reportedly excluded.
-- **Cost to the app:** needs Solace's JMS client library (`solace-pubsubplus`, a native library of
-  tens of MB) and processes a national stream locally (modest CPU/RAM, still one process).
-- **Your part:** register at data.faa.gov, then in the SWIFT portal (portal.swim.faa.gov) create an
-  SCDS subscription to **TFMS Flight Data (TFMData)**. You'll get a Solace host, message VPN,
-  username, password and queue name → `SWIM_HOST`, `SWIM_VPN`, `SWIM_USERNAME`, `SWIM_PASSWORD`,
-  `SWIM_QUEUE`. Questions: scds@faa.gov.
+- **Cost to the app:** Solace's client library (`solace-pubsubplus`, Apache-2.0, ~15 MB on disk,
+  ~7 MB RAM once loaded; installed in the image, loaded only when SWIM is configured) and one
+  national stream that the app filters by message header before parsing (modest CPU).
+- **Built** (2026-11-17, tested with synthetic messages only; PLAN §3.6). It keeps flights to or
+  from your **airport places** and those of aircraft you follow by registration, matches them to
+  live aircraft by callsign (or N-number), uses the filed route ahead of adsb.im, and adds the
+  "Filed plan" filter fields (`filed_to_place`, `filed_eta_s`, `filed_aircraft_type`, …).
+
+**How to sign up (about 15 minutes, approval is usually automatic):**
+
+1. Create an account in the **SWIFT portal**, `https://portal.swim.faa.gov` (it may send you
+   through the FAA's identity sign-up first). Accept the SCDS terms: non-operational use only.
+2. In the portal, open **SCDS** and **subscribe** to a service. Pick **TFMS → "TFMData" / "TFMS
+   Flight Data"** (the flight data output, also listed as `tfmDataService`). That's the one this app
+   parses. Not needed: TFMS flow information only, SFDPS (en-route FIXM), STDDS (surface/terminal),
+   TBFM, ITWS, AIM (NOTAMs).
+3. When the subscription is approved, its **connection details** page shows: the JMS/SMF
+   connection URL (`tcps://<host>:55443`), the **Message VPN** (e.g. `TFMS`), your **username** and
+   **password**, and the **queue name**. Use them as:
+   `SWIM_HOST=tcps://<host>:55443`, `SWIM_VPN`, `SWIM_USERNAME`, `SWIM_PASSWORD`, `SWIM_QUEUE`.
+4. Put them in `.env`, `docker compose up -d`, and check **System → Sources → faa-swim**: it
+   should say "connected" and show messages per minute within a minute. Filed flights for your
+   airports appear below the table.
+5. **Keep it connected.** SCDS disables subscriptions that stay idle (about 60 days), and the
+   queue fills up while nothing reads it. Switching the source off in the Sources report
+   disconnects; turn it back on within that time.
+
+Questions about the service: scds@faa.gov. The data is US civil IFR; military and other
+sensitive flights are generally not published, so this complements ADS-B rather than replacing it.
 
 ### FlightAware AeroAPI (Personal; free allowance)
 

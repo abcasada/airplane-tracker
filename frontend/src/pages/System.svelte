@@ -6,6 +6,7 @@
     { name: 'The OpenSky Network', url: 'https://opensky-network.org', note: 'live positions when OPENSKY_CLIENT_ID is set (non-commercial; see their terms of use)' },
     { name: 'FlyItalyADSB', url: 'https://flyitalyadsb.com', note: 'live positions when FLYITALY_API_KEY is set (CC BY-SA 4.0)' },
     { name: 'Flightradar24', url: 'https://www.flightradar24.com', note: 'on-demand lookups and gap-fill when FR24_API_KEY is set (paid API, for your own use only)' },
+    { name: 'FAA SWIM', url: 'https://www.faa.gov/air_traffic/technology/swim', note: 'filed flight plans (TFMS) when SWIM_HOST and the other SWIM settings are set (FAA SCDS, non-operational use)' },
     { name: 'tar1090-db', url: 'https://github.com/wiedehopf/tar1090-db', note: 'aircraft database and military address ranges (wiedehopf, from Mictronics)' },
     { name: 'plane-alert-db', url: 'https://github.com/sdr-enthusiasts/plane-alert-db', note: 'notable aircraft and photo links (ODbL 1.0, contents DbCL 1.0)' },
     { name: 'VRS standing data', url: 'https://github.com/vradarserver/standing-data', note: 'airlines and routes (CC0)' },
