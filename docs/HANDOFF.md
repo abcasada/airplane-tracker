@@ -1,4 +1,4 @@
-# Handoff (2026-11-10)
+# Handoff (2026-11-17)
 
 For whoever (human or LLM) continues this project. Read `CLAUDE.md` first (rules and architecture
 map), then this file. Deeper docs: `docs/PLAN.md` (design and history), `docs/SOURCES.md` (data
@@ -12,86 +12,98 @@ OpenSky and the user's own receiver) around the user's places, merges them by he
 enriches/classifies aircraft (military focus), runs user-built filters, and pushes matches to the
 phone through the user's own **ntfy** server. One Docker container; PWA web UI with a live map.
 
-- **Built and merged to `main`:** Phases 0–3 and most of 4 (auth+TOTP, ingest, enrichment, military
+- **Built and on `main`:** Phases 0–3 and most of 4 (auth+TOTP, ingest, enrichment, military
   classifier, filter engine and dashboard, places/airports/areas, prediction with ETA, replay
   harness, "What if?" backtest, sightings history, day/night, FAA airspace search, backup/restore),
-  plus ntfy notifications, **follow specific aircraft anywhere** (`app/watch.py`) and
-  **take-off/landing notifications** (`app/tracks/events.py`).
-- **Built 2026-11-10 (branch `claude/integration`, merging `claude/military-suggestions`,
-  `claude/multi-source`, `claude/simple-filter-mode`; not yet on `main`):**
-  - Military review suggestions from overrides (`classify/suggest.py`, migration 0007 adds an
-    override snapshot). Accept/dismiss on the military review page; never auto-applied.
-  - Multi-source merge (no more failover): each source has its own loop, token bucket (≤50%) and
-    breaker; merge rules in `tracks/store.py`; filter fields `sources`, `seen_by_my_receiver`;
-    Sources report on the System page (`ingest/sourcestats.py`, `GET /api/sources`).
-  - Opt-in sources: FlyItalyADSB (`FLYITALY_API_KEY`), OpenSky (`OPENSKY_CLIENT_ID/SECRET`,
-    credit-metered), local receiver (`RECEIVER_URL`, optional `RECEIVER_UAT_URL`).
-    Prediction now runs at most every 5 s (`MIN_CYCLE_S`) so 1 Hz data doesn't change hysteresis.
-    Each source can be switched off/on in the Sources report (setting `sources`).
-  - Suggestion settings: minimum agreeing marks (default 3) and opt-in "bring back a dismissed
-    suggestion once its evidence doubles".
-  - FR24-style simple mode in the filter editor (`frontend/src/lib/simple.ts`), lossless
-    round-trip to the same expression tree; route origin/destination autocomplete airports.
-- **Last verified 2026-11-10 (integration branch):** 182 backend tests, ruff and `mypy --strict`
-  clean; frontend check, 26 tests and build clean (host has no Node: run npm in `node:22-slim`).
-  Replay fixture metrics unchanged. **No new UI has been looked at in a browser yet**, and the
-  Docker image hasn't been rebuilt with these changes.
-- **Deployment:** on 2026-11-01 the user reworked it to use the server's *shared* Cloudflare tunnel:
-  the app publishes `127.0.0.1:8790` (`HOST_PORT`) and the tunnel routes `adsb.<domain>` to it
-  (`docs/DEPLOY.md`). **Checked 2026-11-10:** the container runs healthy (~130 MB) with datasets
-  imported, but **first-run setup was never completed** (0 users, 0 places), so nothing is polled,
-  recorded or alerted yet. An ntfy container (v2.34.0, ≥ 2.16 so in-place updates work) runs on
-  the same server; whether the app is configured to use it is unknown.
-- Home Assistant was removed at the user's request.
+  ntfy notifications, follow-anywhere (`watch.py`), take-off/landing notifications.
+- **2026-11-10 (PR #5):** military review suggestions (`classify/suggest.py`, settings for minimum
+  marks and "bring back when evidence doubles"); multi-source merge with per-source budgets and a
+  Sources report with per-source on/off switch; FlyItalyADSB, OpenSky, local receiver sources;
+  simple filter mode (`frontend/src/lib/simple.ts`).
+- **2026-11-17 (branch `claude/integration-2`):**
+  - Simple mode "At or headed to your places" rows: Arriving soon (`predicted_arrival`), Inside or
+    entering soon (`predicted_entry`), Distance and Height above place; place pickers default to
+    the first airport/area place. "At the airport" = small distance + height 0 ft.
+  - **Flightradar24** (`sources/fr24.py`, `ingest/fr24.py`, `ingest/credits.py`): never polled;
+    "Look up on Flightradar24" on the aircraft page and gap-fill for followed/recently matched
+    aircraft the free feeds lost ≥90 s. Monthly credit cap (`FR24_MONTHLY_CREDITS`, default
+    20,000), even-pace limit for gap-fill, ≤1 request/12 s. Off until `FR24_API_KEY` is set.
+  - **FAA registry + hexdb.io** (`enrich/faa.py`, `enrich/hexdb.py`, migration 0008): weekly
+    download of `ReleasableAircraft.zip` (streamed import, ~5 MB extra RAM), fills US civil
+    aircraft fields after tar1090-db; fields `registrant_type`, `faa_aircraft_type`,
+    `faa_engine_type`; classifier setting `government_registrant_types`. hexdb.io only for
+    tracked aircraft still missing data (≥2 s apart, ≤2,000/day, cached).
+  - **FAA SWIM** (`sources/swim.py`, migration 0009): TFMS flight data over Solace (optional
+    `swim` extra, installed in the image, ~7 MB RAM only when configured). Keeps flights to/from
+    airport places and followed registrations; "Filed plan" filter fields (`has_filed_plan`,
+    `filed_to_place`, `filed_eta_s`, …); filed plans take priority as routes. Off until the five
+    `SWIM_*` env vars are set.
+  - `docs/NTFY.md` now covers ntfy behind the shared tunnel and an existing ntfy server.
+- **Last verified 2026-11-17 (`claude/integration-2`):** 231 backend tests, ruff and
+  `mypy --strict` clean; frontend check, 37 tests and build clean (host has no Node: run npm in
+  `node:22-slim`). **None of the new UI has been looked at in a browser.**
+- **Deployment:** shared Cloudflare tunnel; the app publishes `127.0.0.1:8790` and the tunnel
+  routes `adsb.<domain>` to it (`docs/DEPLOY.md`). PR #5 is deployed and healthy (2026-11-17).
+  **First-run setup still not done** (0 users, 0 places): nothing is polled, recorded or alerted.
+  ntfy v2.34.0 runs on the same server with `deny-all` auth; the app container reaches it via its
+  public URL. Setup steps for the user: `docs/NTFY.md` step 2 (a write-only `airplane-tracker`
+  ntfy user + token).
 
 ## Not yet verified against real services
 
-- **ntfy** (payloads follow ntfy's docs; mock-tested only). First real check: Settings → "Save &
-  send test notification". Needs ntfy ≥ 2.16 for in-place updates (`sequence_id`).
-  `docs/NTFY.md` still shows ntfy with its own cloudflared container; with the shared tunnel it
-  probably needs a route to ntfy's port instead. Update it once the real setup is known.
-- **Take-off/landing detection** on live traffic (tested on synthetic flights only). Watch for false
+- **ntfy** (mock-tested only). First real check: Settings → "Save & send test notification".
+- **Take-off/landing detection** on live traffic (synthetic flights only). Watch for false
   "landed (probably)"; thresholds are constants at the top of `events.py`.
-- **Notification buttons** need `PUBLIC_URL` set and reachable from the phone.
+- **FAA registry download** answered HTTP 503 to a plain request with our User-Agent. If it keeps
+  failing, download `ReleasableAircraft.zip` in a browser into `/data/datasets/`. The FAA column
+  layout doc returned 403, so code tables come from secondary sources: check the first import.
+- **FR24**: per-request credit costs aren't published; `FR24_CREDITS_PER_FLIGHT` (default 8) is an
+  estimate. Calibrate with "Check FR24's own count" in the Sources report. Terms/attribution and
+  whether the plan resets monthly or on the subscription anniversary are unverified.
+- **SWIM** message details (etaType/status values, airport code forms) need checking on first
+  connection. The FAA disables SCDS subscriptions idle for ~60 days.
 
 ## User decisions
 
 - ntfy only (self-hosted, own hostname); no Home Assistant, no Web Push, **no container registry
   publishing**.
-- Use as many free sources as possible. **Paid: Flightradar24 Explorer approved** (~$9/month flat,
-  limited by *credits*: enforce a monthly credit cap, on-demand lookups only). ADS-B Exchange only if
-  the Sources report shows gaps. Details in `docs/SOURCES.md`.
-- **FAA SWIM** approved, including the Solace client library; the user must register first.
-- **Own receiver** planned: their Raspberry Pi 2 near the antenna on Ethernet, feeding all networks;
-  the app will read its `aircraft.json` over the LAN. Server is in the basement.
+- **Purpose:** what is at or headed to the airport or bombing range, not what's visible from home.
+  Design filter UI and defaults around airport/area places.
+- Use as many free sources as possible; keep OpenSky (user accepts its terms for personal use);
+  adsb.lol polled continuously with a per-source off switch. **Paid: Flightradar24 Explorer**
+  (credit-capped, never polled). ADS-B Exchange only if the Sources report shows gaps.
+- **FAA SWIM** approved, including the Solace client library.
+- **Own receiver** planned: Raspberry Pi 2 near the antenna on Ethernet; use its IP, not `pi.local`.
+- Simple mode: Simple is the default view when a filter fits; no "Visible from place" row; two
+  conditions on one field stay in Advanced.
+- Military suggestions: no registration-pattern suggestions; minimum marks is a setting;
+  dismissed stay dismissed unless the opt-in "evidence doubled" setting is on.
+- The user approved merging and deploying finished work once all checks pass.
 - Repo goes public (MIT) when they choose. Never commit their domain, coordinates, tokens, ntfy
   details or real places.
 
 ## Waiting on the user
 
-Finish first-run setup, then verify ntfy · review/merge the 2026-11-10 branches · API keys: FlyItalyADSB, OpenSky · FAA SWIM registration · FR24
-subscription · receiver hardware and feeder accounts · airplanes.live access (it returned 403 to us;
-feeding it or emailing them is the way in).
+First-run setup, then ntfy connection and test · API keys: FlyItalyADSB, OpenSky · FR24
+subscription · FAA SWIM registration (TFMS → TFMData, see `docs/SOURCES.md`) · receiver hardware
+and feeder accounts · airplanes.live access (403 to us; feeding it or emailing them is the way in).
+
+## Open questions for the user
+
+- FR24 gap-fill: also for aircraft that matched a filter (can be costly with broad filters), or
+  only followed aircraft? Should FR24 route data become filter fields? Add "Look up on FR24" to
+  the watch status for lost followed aircraft?
+- Simple mode: a "within N min" lead time per filter (needs a filter-level setting in the cascade)?
+  An "any active airport/area" place option (needs a new engine sentinel next to `ANY_VIEWPOINT`)?
+- SWIM: alerts for filed flights not yet in ADS-B range ("C-17 filed into the airport at 14:20")?
+  Filters only see tracked aircraft today, so this needs a design decision.
 
 ## Suggested next work
 
-1. Look at the new UI in a browser (simple mode on a phone, military suggestions, Sources report).
-2. FR24 gap-fill/on-demand source with a credit cap (needs the subscription).
-3. FAA SWIM schedule source (needs registration).
-4. Tune prediction on ≥2 weeks of real recordings (`python -m app.replay`); none exist yet.
-
-## Decisions from 2026-11-10
-
-- Keep OpenSky (the user accepts its terms for personal use). adsb.lol polled continuously, with a
-  per-source off switch. Recording growth with 14-day retention is fine (check DB size after a week).
-- Simple mode: default view stays Simple when the filter fits; **no** "Visible from place" row —
-  the app is about what is at or headed to the airport or bombing range, not what's visible from
-  home. Two conditions on one field stay in Advanced.
-- Military suggestions: no registration-pattern suggestions; minimum marks is a setting; dismissed
-  stay dismissed unless the opt-in "evidence doubled" setting is on; restore replaces dismissals.
-- Notes: FlyItalyADSB limits come from their docs (one page says 100 req/min); the Sources report
-  will show real usage. Use the Pi's IP, not `pi.local`, for `RECEIVER_URL`. Check "Filter
-  evaluation" ms once 1 Hz receiver data flows.
+1. Look at the new UI in a browser (simple mode on a phone, military suggestions, Sources report,
+   FR24 lookup card, filed flights list).
+2. After setup: watch the logs for source health, FAA import, hexdb.io and filter evaluation ms.
+3. Tune prediction on ≥2 weeks of real recordings (`python -m app.replay`); none exist yet.
 
 ## Gotchas
 
@@ -101,4 +113,5 @@ feeding it or emailing them is the way in).
   known first-run token. TOTP codes can't be reused within 30 s (matters for browser tests).
 - After changing prediction code, run the scenarios across many seeds and compare fixture metrics
   (`REPLAY_DUMP=… pytest tests/test_replay.py`); rules in `CLAUDE.md` → Testing.
-- Datasets download into `/data` at runtime; never commit them. adsbdb data must never be exported.
+- Datasets download into `/data` at runtime; never commit them. adsbdb and FR24 data must never be
+  exported or committed. The lock file is generated with the uv version the Dockerfile uses.
